@@ -99,12 +99,12 @@
       "flake": false,
       "locked": {
         "lastModified": 1,
-        "narHash": "sha256-Vx0VJEm3ahgsAMtqhg/BZJ8YHMqowcNdZqTMAu8FGaw=",
-        "path": "/nix/store/hy45n0yzvz0j0wxg83c70iaflalavlqi-source/rust-toolchain.toml",
+        "narHash": "sha256-0w/r0q5DJxzFTI6Tlo+iTnMYxo7ipaCVRpC/FNjQji8=",
+        "path": "/nix/store/k50faa13xd9v66ggnn50ryqc6nd4w73g-source/rust-toolchain.toml",
         "type": "path"
       },
       "original": {
-        "path": "/nix/store/hy45n0yzvz0j0wxg83c70iaflalavlqi-source/rust-toolchain.toml",
+        "path": "/nix/store/k50faa13xd9v66ggnn50ryqc6nd4w73g-source/rust-toolchain.toml",
         "type": "path"
       }
     },

@@ -63,7 +63,6 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     spawner.spawn(listener(manager, receiver)).ok();
-    spawner.spawn(broadcaster(sender)).ok();
 
     let mut ticker = Ticker::every(Duration::from_millis(500));
     loop {
@@ -83,19 +82,6 @@ async fn main(spawner: Spawner) -> ! {
         let mut sender = sender.lock().await;
         let status = sender.send_async(&peer.peer_address, b"Hello Peer.").await;
         println!("Send hello status: {:?}", status);
-    }
-}
-
-#[embassy_executor::task]
-async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>) {
-    let mut ticker = Ticker::every(Duration::from_secs(1));
-    loop {
-        ticker.next().await;
-
-        defmt::info!("Send Broadcast...");
-        let mut sender = sender.lock().await;
-        let status = sender.send_async(&BROADCAST_ADDRESS, b"Hello.").await;
-        println!("Send broadcast status: {:?}", status);
     }
 }
 

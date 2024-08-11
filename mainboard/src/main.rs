@@ -2,11 +2,13 @@
 #![no_main]
 
 use embassy_executor::Spawner;
+use portable_atomic::{AtomicBool, Ordering};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
+    gpio::{any_pin::AnyPin, Io},
     peripherals::Peripherals,
     prelude::*,
     rng::Rng,
@@ -19,6 +21,7 @@ use esp_wifi::{
     initialize,
     EspWifiInitFor,
 };
+mod motor_control;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -29,14 +32,20 @@ macro_rules! mk_static {
     }};
 }
 
+static PEER_FOUND: AtomicBool = AtomicBool::new(false);
+
+//type FrontMotorDriver = motor_control::MotorControlDriver<'static, GpioPin<0>>;
+//type BackMotorDriver = motor_control::MotorControlDriver<'static, GpioPin<1>>;
+
 #[main]
-async fn main(spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
     let peripherals = Peripherals::take();
 
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
+    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
     let init = initialize(
@@ -65,31 +74,36 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(listener(manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
 
-    let mut ticker = Ticker::every(Duration::from_millis(500));
-    loop {
-        ticker.next().await;
-        let peer = match manager.fetch_peer(false) {
-            Ok(peer) => peer,
-            Err(_) => {
-                if let Ok(peer) = manager.fetch_peer(true) {
-                    peer
-                } else {
-                    continue;
-                }
-            }
-        };
-
-        defmt::info!("Send hello to peer {:?}", peer.peer_address);
-        let mut sender = sender.lock().await;
-        let status = sender.send_async(&peer.peer_address, b"Hello Peer.").await;
-        println!("Send hello status: {:?}", status);
-    }
+//    let mut ticker = Ticker::every(Duration::from_millis(500));
+//    loop {
+//        ticker.next().await;
+//        let peer = match manager.fetch_peer(false) {
+//            Ok(peer) => peer,
+//            Err(_) => {
+//                if let Ok(peer) = manager.fetch_peer(true) {
+//                    peer
+//                } else {
+//                    continue;
+//                }
+//            }
+//        };
+//
+//        defmt::info!("Send hello to peer {:?}", peer.peer_address);
+//        let mut sender = sender.lock().await;
+//        let status = sender.send_async(&peer.peer_address, b"Hello Peer.").await;
+//        defmt::info!("Send hello status: {:?}", status);
+//    }
 }
+
+//#[embassy_executor::task]
+//async fn motor_driver(front_driver: &'static FrontMotorDriver,
+//    back_driver: &'static BackMotorDriver, adc: ADC1) {
+//}
 
 #[embassy_executor::task]
 async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>) {
     let mut ticker = Ticker::every(Duration::from_secs(1));
-    loop {
+    while !PEER_FOUND.load(Ordering::Relaxed) {
         ticker.next().await;
 
         defmt::info!("Send Broadcast...");
@@ -104,18 +118,17 @@ async fn listener(manager: &'static EspNowManager<'static>, mut receiver: EspNow
     loop {
         let r = receiver.receive_async().await;
         defmt::info!("Received {:?}", r.get_data());
-        if r.info.dst_address == BROADCAST_ADDRESS {
-            if !manager.peer_exists(&r.info.src_address) {
-                manager
-                    .add_peer(PeerInfo {
-                        peer_address: r.info.src_address,
-                        lmk: None,
-                        channel: None,
-                        encrypt: false,
-                    })
-                    .unwrap();
-                defmt::info!("Added peer {:?}", r.info.src_address);
-            }
+        if !manager.peer_exists(&r.info.src_address) {
+            manager
+                .add_peer(PeerInfo {
+                    peer_address: r.info.src_address,
+                    lmk: None,
+                    channel: None,
+                    encrypt: false,
+                })
+                .unwrap();
+            PEER_FOUND.store(true, Ordering::Relaxed);
+            defmt::info!("Added peer {:?}", r.info.src_address);
         }
     }
 }

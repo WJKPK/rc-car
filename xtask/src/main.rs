@@ -56,7 +56,6 @@ fn gdb(elf: &Path) -> Result<(), anyhow::Error> {
     // get symbol addresses from ELF
     let nm = cmd!("nm", "-C", &elf).read()?;
     let mut rtt = None;
-    let mut main = None;
     for line in nm.lines() {
         if line.ends_with("_SEGGER_RTT") {
             rtt = line.splitn(2, ' ').next();
@@ -69,11 +68,6 @@ fn gdb(elf: &Path) -> Result<(), anyhow::Error> {
         rtt.ok_or_else(|| anyhow!("RTT control block not found"))?,
         16,
     )?;
-    let main = u32::from_str_radix(
-        main.ok_or_else(|| anyhow!("`main` function not found"))?,
-        16,
-    )? & !THUMB_BIT;
-
     #[rustfmt::skip]
     let openocd = cmd!(
         "openocd",

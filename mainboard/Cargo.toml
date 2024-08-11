@@ -14,11 +14,13 @@ embassy-time = { version = "0.3.0", features = ["defmt", "defmt-timestamp-uptime
 
 esp-hal = { version = "0.18.0", features = ["log"] }
 esp-hal-embassy = { version = "0.1.0" }
-esp-backtrace = { version = "0.11.1", features = ["exception-handler", "panic-handler", "println"] }
-esp-println = { version = "0.9.1", features = ["log", "defmt-espflash"]}
+esp-backtrace = { version = "0.13.0", features = ["exception-handler", "panic-handler", "println"] }
+esp-println = { version = "0.10.0", features = ["log", "defmt-espflash"]}
 esp-wifi = { version = "0.6.0"}
 
 static_cell         = { version = "2.0.0", features = ["nightly"] }
+portable-atomic =     { version = "1.7.0", default-features = false }
+heapless = "0.8.0"
 
 [features]
 esp32c3= ["esp-hal/esp32c3", "esp-backtrace/esp32c3", "esp-println/esp32c3"]

@@ -188,6 +188,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "duct"
+version = "0.13.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4ab5718d1224b63252cd0c6f74f6480f9ffeb117438a2e0f5cf6d9a4798929c"
+dependencies = [
+ "libc",
+ "once_cell",
+ "os_pipe",
+ "shared_child",
+]
+
+[[package]]
 name = "embassy-executor"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,7 +426,17 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dda6c53c50ed96cce44e8565bd7659f8884d55bac3262184c3a77f748553e3ff"
 dependencies = [
- "esp-println",
+ "esp-println 0.9.1",
+]
+
+[[package]]
+name = "esp-backtrace"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a34817530dceba397172d6a9fb660b684a73a3a591fbe7fb0da27bed796f270"
+dependencies = [
+ "esp-build",
+ "esp-println 0.10.0",
 ]
 
 [[package]]
@@ -525,6 +547,19 @@ dependencies = [
  "critical-section",
  "defmt",
  "log",
+]
+
+[[package]]
+name = "esp-println"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58cd4fa834980ba64aad00a5c2c1a630020af984eadef65a125cb99085f6f54c"
+dependencies = [
+ "critical-section",
+ "defmt",
+ "esp-build",
+ "log",
+ "portable-atomic",
 ]
 
 [[package]]
@@ -700,6 +735,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "libc"
+version = "0.2.155"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
+
+[[package]]
 name = "libm"
 version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,6 +827,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "once_cell"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
+
+[[package]]
+name = "os_pipe"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ffd2b0a5634335b135d5728d84c5e0fd726954b87111f7506a61c502280d982"
+dependencies = [
+ "libc",
+ "windows-sys",
 ]
 
 [[package]]
@@ -904,11 +961,13 @@ dependencies = [
  "embassy-executor",
  "embassy-sync 0.5.0",
  "embassy-time",
- "esp-backtrace",
+ "esp-backtrace 0.13.0",
  "esp-hal",
  "esp-hal-embassy",
- "esp-println",
+ "esp-println 0.10.0",
  "esp-wifi",
+ "heapless",
+ "portable-atomic",
  "static_cell",
 ]
 
@@ -920,10 +979,10 @@ dependencies = [
  "embassy-executor",
  "embassy-sync 0.5.0",
  "embassy-time",
- "esp-backtrace",
+ "esp-backtrace 0.11.1",
  "esp-hal",
  "esp-hal-embassy",
- "esp-println",
+ "esp-println 0.9.1",
  "esp-wifi",
  "static_cell",
 ]
@@ -1011,6 +1070,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb5b1b31579f3811bf615c144393417496f152e12ac8b7663bf664f4a815306d"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "shared_child"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09fa9338aed9a1df411814a5b2252f7cd206c55ae9bf2fa763f8de84603aa60c"
+dependencies = [
+ "libc",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1320,6 +1389,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68a9bda4691f099d435ad181000724da8e5899daa10713c2d432552b9ccd3a6f"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "duct",
 ]
 
 [[package]]

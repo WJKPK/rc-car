@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use heapless::Vec;
 use embassy_executor::Spawner;
 use portable_atomic::{AtomicBool, Ordering};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
@@ -14,6 +15,14 @@ use esp_hal::{
     rng::Rng,
     system::SystemControl,
     timer::timg::TimerGroup,
+    ledc::{
+        channel::{self, Channel, ChannelIFace},
+        timer::{self, Timer, TimerIFace},
+        LSGlobalClkSource,
+        Ledc,
+        LowSpeed,
+    },
+
 };
 use esp_println::println;
 use esp_wifi::{
@@ -22,6 +31,7 @@ use esp_wifi::{
     EspWifiInitFor,
 };
 mod motor_control;
+mod pwm_split;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -57,6 +67,12 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
+    let mut ledc = Ledc::new(peripherals.LEDC, &clocks);
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+
+    let splitted = pwm_split::SplitedPwm::new(&ledc);
+    let mut vec = Vec::<pwm_split::PwmChannelLowSpeed<AnyPin>, 5>::new();
+    splitted.create_channels(&mut vec, AnyPin::new(io.pins.gpio8));
     let wifi = peripherals.WIFI;
     let esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
     defmt::info!("esp-now version {}", esp_now.get_version().unwrap());

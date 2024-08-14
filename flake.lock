@@ -100,11 +100,11 @@
       "locked": {
         "lastModified": 1,
         "narHash": "sha256-0w/r0q5DJxzFTI6Tlo+iTnMYxo7ipaCVRpC/FNjQji8=",
-        "path": "/nix/store/i9rl8lgw52s6p6ifqck51mddmd36i2bg-source/rust-toolchain.toml",
+        "path": "/nix/store/y3p1aq4hip4qxy4czrasla5sar9qacqd-source/rust-toolchain.toml",
         "type": "path"
       },
       "original": {
-        "path": "/nix/store/i9rl8lgw52s6p6ifqck51mddmd36i2bg-source/rust-toolchain.toml",
+        "path": "/nix/store/y3p1aq4hip4qxy4czrasla5sar9qacqd-source/rust-toolchain.toml",
         "type": "path"
       }
     },

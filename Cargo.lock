@@ -966,6 +966,7 @@ dependencies = [
  "esp-hal-embassy",
  "esp-println 0.10.0",
  "esp-wifi",
+ "fugit",
  "heapless",
  "portable-atomic",
  "static_cell",

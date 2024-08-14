@@ -21,6 +21,7 @@ esp-wifi = { version = "0.6.0"}
 static_cell         = { version = "2.0.0", features = ["nightly"] }
 portable-atomic =     { version = "1.7.0", default-features = false }
 heapless = "0.8.0"
+fugit = "0.3.7"
 
 [features]
 esp32c3= ["esp-hal/esp32c3", "esp-backtrace/esp32c3", "esp-println/esp32c3"]

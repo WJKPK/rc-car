@@ -8,8 +8,8 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
-    clock::ClockControl,
-    gpio::{any_pin::AnyPin, Io},
+    clock::{ClockControl, Clocks},
+    gpio::{any_pin::AnyPin, Io, GpioPin},
     peripherals::Peripherals,
     prelude::*,
     rng::Rng,
@@ -32,6 +32,7 @@ use esp_wifi::{
 };
 mod motor_control;
 mod pwm_split;
+use pwm_split::{TimerSpeed, PwmChannel};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -54,7 +55,10 @@ async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
 
     let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
+    let clocks = mk_static!(Clocks<'static>, ClockControl::max(system.clock_control).freeze());
+    let ledc = mk_static!(Ledc<'static>, Ledc::new(peripherals.LEDC, clocks));
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
@@ -63,22 +67,16 @@ async fn main(spawner: Spawner) {
         timer,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
-        &clocks,
+        clocks,
     )
     .unwrap();
 
-    let mut ledc = Ledc::new(peripherals.LEDC, &clocks);
-    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
-
-    let splitted = pwm_split::SplitedPwm::new(&ledc);
-    let mut vec = Vec::<pwm_split::PwmChannelLowSpeed<AnyPin>, 5>::new();
-    splitted.create_channels(&mut vec, AnyPin::new(io.pins.gpio8));
     let wifi = peripherals.WIFI;
     let esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
     defmt::info!("esp-now version {}", esp_now.get_version().unwrap());
 
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timer_group0);
+    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, clocks);
+    esp_hal_embassy::init(clocks, timer_group0);
 
     let (manager, sender, receiver) = esp_now.split();
     let manager = mk_static!(EspNowManager<'static>, manager);
@@ -87,34 +85,42 @@ async fn main(spawner: Spawner) {
         Mutex::<NoopRawMutex, _>::new(sender)
     );
 
+    let mut splitted = mk_static!(pwm_split::SplitedPwm<'static>, pwm_split::SplitedPwm::new(ledc));
+    let power_motor_pins = mk_static!([AnyPin<'static>; 4],
+        [ AnyPin::new(io.pins.gpio2),
+        AnyPin::new(io.pins.gpio3),
+        AnyPin::new(io.pins.gpio7),
+        AnyPin::new(io.pins.gpio10) ]
+    );
+    let direction_motor_pins = mk_static!([AnyPin<'static>; 1],
+        [AnyPin::new(io.pins.gpio8)]
+    );
+
     spawner.spawn(listener(manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
+    spawner.spawn(motor_driver(splitted, power_motor_pins, direction_motor_pins)).ok();
 
-//    let mut ticker = Ticker::every(Duration::from_millis(500));
-//    loop {
-//        ticker.next().await;
-//        let peer = match manager.fetch_peer(false) {
-//            Ok(peer) => peer,
-//            Err(_) => {
-//                if let Ok(peer) = manager.fetch_peer(true) {
-//                    peer
-//                } else {
-//                    continue;
-//                }
-//            }
-//        };
-//
-//        defmt::info!("Send hello to peer {:?}", peer.peer_address);
-//        let mut sender = sender.lock().await;
-//        let status = sender.send_async(&peer.peer_address, b"Hello Peer.").await;
-//        defmt::info!("Send hello status: {:?}", status);
-//    }
+    defmt::info!("Bye!");
 }
 
-//#[embassy_executor::task]
-//async fn motor_driver(front_driver: &'static FrontMotorDriver,
-//    back_driver: &'static BackMotorDriver, adc: ADC1) {
-//}
+#[embassy_executor::task]
+async fn motor_driver(splitted: &'static mut pwm_split::SplitedPwm<'static>,
+    power_motor_pins: &'static mut [AnyPin<'static>; 4], direction_motor_pins: &'static mut [AnyPin<'static>; 1]) {
+    let fast_channel_numbers = [
+        PwmChannel::Channel0,
+        PwmChannel::Channel1,
+        PwmChannel::Channel2,
+        PwmChannel::Channel3,
+    ];
+    let fast_channels = splitted.create_channels::<AnyPin, 4>(TimerSpeed::FastTimer, power_motor_pins, fast_channel_numbers);
+    let slow_channel_numbers = [
+        PwmChannel::Channel4
+    ];
+    let slow_channels = splitted.create_channels::<AnyPin, 1>(TimerSpeed::SlowTimer, direction_motor_pins, slow_channel_numbers);
+
+    loop {
+    }
+}
 
 #[embassy_executor::task]
 async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>) {

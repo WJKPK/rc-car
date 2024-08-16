@@ -1,38 +1,31 @@
 #![no_std]
 #![no_main]
 
-use heapless::Vec;
+mod motor_control;
+mod pwm_split;
+
 use embassy_executor::Spawner;
-use portable_atomic::{AtomicBool, Ordering};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
     clock::{ClockControl, Clocks},
-    gpio::{any_pin::AnyPin, Io, GpioPin},
+    gpio::{any_pin::AnyPin, Io},
+    ledc::{LSGlobalClkSource, Ledc},
     peripherals::Peripherals,
     prelude::*,
     rng::Rng,
     system::SystemControl,
     timer::timg::TimerGroup,
-    ledc::{
-        channel::{self, Channel, ChannelIFace},
-        timer::{self, Timer, TimerIFace},
-        LSGlobalClkSource,
-        Ledc,
-        LowSpeed,
-    },
-
 };
 use esp_println::println;
 use esp_wifi::{
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
-    initialize,
-    EspWifiInitFor,
+    initialize, EspWifiInitFor,
 };
-mod motor_control;
-mod pwm_split;
-use pwm_split::{TimerSpeed, PwmChannel};
+use portable_atomic::{AtomicBool, Ordering};
+use pwm_split::PwmChannel;
+use motor_control::{Direction, Angle};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -45,9 +38,6 @@ macro_rules! mk_static {
 
 static PEER_FOUND: AtomicBool = AtomicBool::new(false);
 
-//type FrontMotorDriver = motor_control::MotorControlDriver<'static, GpioPin<0>>;
-//type BackMotorDriver = motor_control::MotorControlDriver<'static, GpioPin<1>>;
-
 #[main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
@@ -55,11 +45,14 @@ async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
 
     let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = mk_static!(Clocks<'static>, ClockControl::max(system.clock_control).freeze());
+    let clocks = mk_static!(
+        Clocks<'static>,
+        ClockControl::max(system.clock_control).freeze()
+    );
     let ledc = mk_static!(Ledc<'static>, Ledc::new(peripherals.LEDC, clocks));
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
 
-    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
     let init = initialize(
@@ -85,41 +78,46 @@ async fn main(spawner: Spawner) {
         Mutex::<NoopRawMutex, _>::new(sender)
     );
 
-    let mut splitted = mk_static!(pwm_split::SplitedPwm<'static>, pwm_split::SplitedPwm::new(ledc));
-    let power_motor_pins = mk_static!([AnyPin<'static>; 4],
-        [ AnyPin::new(io.pins.gpio2),
-        AnyPin::new(io.pins.gpio3),
-        AnyPin::new(io.pins.gpio7),
-        AnyPin::new(io.pins.gpio10) ]
+    let splitted = mk_static!(
+        pwm_split::SplitedPwm<'static>,
+        pwm_split::SplitedPwm::new(ledc)
     );
-    let direction_motor_pins = mk_static!([AnyPin<'static>; 1],
-        [AnyPin::new(io.pins.gpio8)]
+
+    let front_power = motor_control::PowerMotorInternals::new(
+        [AnyPin::new(io.pins.gpio3), AnyPin::new(io.pins.gpio2)],
+        [PwmChannel::Channel0, PwmChannel::Channel1],
+    );
+
+    let back_power = motor_control::PowerMotorInternals::new(
+        [AnyPin::new(io.pins.gpio8), AnyPin::new(io.pins.gpio10)],
+        [PwmChannel::Channel2, PwmChannel::Channel3],
+    );
+
+    let serwo =
+        motor_control::SerwoMotorInternals::new(AnyPin::new(io.pins.gpio7), PwmChannel::Channel4);
+    let driver = mk_static!(
+        motor_control::MotorDescriptorBoundle<AnyPin>,
+        motor_control::MotorDescriptorBoundle::new(front_power, back_power, serwo)
     );
 
     spawner.spawn(listener(manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
-    spawner.spawn(motor_driver(splitted, power_motor_pins, direction_motor_pins)).ok();
+    spawner.spawn(motor_driver(splitted, driver)).ok();
 
     defmt::info!("Bye!");
 }
 
 #[embassy_executor::task]
-async fn motor_driver(splitted: &'static mut pwm_split::SplitedPwm<'static>,
-    power_motor_pins: &'static mut [AnyPin<'static>; 4], direction_motor_pins: &'static mut [AnyPin<'static>; 1]) {
-    let fast_channel_numbers = [
-        PwmChannel::Channel0,
-        PwmChannel::Channel1,
-        PwmChannel::Channel2,
-        PwmChannel::Channel3,
-    ];
-    let fast_channels = splitted.create_channels::<AnyPin, 4>(TimerSpeed::FastTimer, power_motor_pins, fast_channel_numbers);
-    let slow_channel_numbers = [
-        PwmChannel::Channel4
-    ];
-    let slow_channels = splitted.create_channels::<AnyPin, 1>(TimerSpeed::SlowTimer, direction_motor_pins, slow_channel_numbers);
-
-    loop {
+async fn motor_driver(
+    splitted: &'static mut pwm_split::SplitedPwm<'static>,
+    motor_controller: &'static mut motor_control::MotorDescriptorBoundle<AnyPin<'static>>,
+) {
+    let motor_driver = motor_controller.setup_driver(splitted);
+    motor_driver.drive_motor(Direction::Forward, 0.9f32).unwrap();
+    if let Some(angle) = Angle::new(0) {
+        motor_driver.drive_serwo(angle).unwrap();
     }
+    loop {}
 }
 
 #[embassy_executor::task]
@@ -154,4 +152,3 @@ async fn listener(manager: &'static EspNowManager<'static>, mut receiver: EspNow
         }
     }
 }
-

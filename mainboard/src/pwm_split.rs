@@ -1,20 +1,15 @@
 use array_init;
-use core::cell::RefCell;
 use esp_hal::{
-    analog::adc::{Adc, AdcChannel, AdcConfig, Attenuation},
-    clock::Clocks,
-    gpio::{any_pin::AnyPin, AnalogPin, OutputPin},
+    gpio::OutputPin,
     ledc::{
         channel::{self, Channel, ChannelIFace},
         timer::{self, Timer, TimerIFace},
-        LSGlobalClkSource, Ledc, LowSpeed,
+        Ledc, LowSpeed,
     },
     peripheral::Peripheral,
-    peripherals::{ADC1, LEDC},
     prelude::*,
 };
 use fugit::HertzU32;
-use heapless::Vec;
 
 #[repr(usize)]
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -51,7 +46,7 @@ impl<'a> SplitedPwm<'a> {
         timer_type: TimerSpeed,
         pin: &'a mut [O; N],
         channel_number: [PwmChannel; N],
-    ) -> [PwmChannelLowSpeed<O>; N]
+    ) -> ([PwmChannelLowSpeed<O>; N], PwmDuty)
     where
         O: Peripheral<P = O> + OutputPin + 'a,
     {
@@ -62,11 +57,11 @@ impl<'a> SplitedPwm<'a> {
                     &self.timer[timer_type as usize],
                     channel_number[i],
                     p,
-                    0,
+                    100,
                 )
             }))
             .unwrap();
-        arr
+        (arr, self.timer[timer_type as usize].get_duty().unwrap())
     }
 
     fn timer_low_speed(

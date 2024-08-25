@@ -6,8 +6,10 @@ use esp_hal::{
 //  peripherals::ADC1,
     prelude::*,
 };
-use crate::pwm_split::{PwmChannel, PwmDuty, PwmChannelLowSpeed, SplitedPwm, TimerSpeed};
+use crate::pwm_split::{PwmChannel, PwmDuty, PwmChannelLowSpeed, SplitedPwm, TimerSpeed, SplitterError};
+use comunication::Angle;
 use esp_println::println;
+
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum Direction {
@@ -26,37 +28,13 @@ enum Drv8210Input {
 
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub enum MotorError {
-    Duty,
+    InternalSetup(SplitterError),
+    InputParameter,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Angle(i8);
-
-impl Angle {
-    pub const fn new(value: i8) -> Option<Self> {
-        if value >= -90 && value <= 90 {
-            Some(Angle(value))
-        } else {
-            None
-        }
-    }
-
-    pub const fn get(&self) -> i8 {
-        self.0
-    }
-}
-
-impl Deref for Angle {
-    type Target = i8;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Angle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl From<SplitterError> for MotorError {
+    fn from(error: SplitterError) -> Self {
+        MotorError::InternalSetup(error)
     }
 }
 
@@ -110,24 +88,26 @@ where
         }
     }
 
-    pub fn setup_driver(&'a mut self, splitted: &'a SplitedPwm<'a>) -> MotorDriver<'a, O> {
+    pub fn setup_driver(&'a mut self, splitted: &'a SplitedPwm<'a>) -> Result<MotorDriver<'a, O>, MotorError> {
         let front_motor = splitted.create_channels::<O, {Drv8210Input::NumOfInputs as usize}> (
-            TimerSpeed::FastTimer,
-            &mut self.front_motor.pins,
-            self.front_motor.channels,
-        );
+           TimerSpeed::FastTimer,
+           &mut self.front_motor.pins,
+           self.front_motor.channels,
+        ).map_err(|e| MotorError::from(e))?;
+
         let back_motor = splitted.create_channels::<O, {Drv8210Input::NumOfInputs as usize}> (
-            TimerSpeed::FastTimer,
-            &mut self.back_motor.pins,
-            self.back_motor.channels,
-        );
+           TimerSpeed::FastTimer,
+           &mut self.back_motor.pins,
+           self.back_motor.channels,
+        ).map_err(|e| MotorError::from(e))?;
+
         let serwo = splitted.create_channels::<O, 1> (
             TimerSpeed::SlowTimer,
             &mut self.serwo.control,
             self.serwo.channel,
-        );
+        ).map_err(|e| MotorError::from(e))?;
 
-        MotorDriver{front_motor, back_motor, serwo}
+        Ok(MotorDriver{front_motor, back_motor, serwo})
     }
 }
 
@@ -142,12 +122,14 @@ pub struct MotorDriver<'a, O: OutputPin> {
 impl<'a, O: OutputPin> MotorDriver<'a, O> {
     fn set_duty(channel: &PwmChannelLowSpeed<'a, O>, duty: PwmDuty, duty_pct: f32) -> Result<(), MotorError> {
         if duty_pct > 1f32 {
-            return Err(MotorError::Duty);
+            return Err(MotorError::InputParameter);
         }
 
         let duty_exp = duty as u32;
         let duty_range = 2u32.pow(duty_exp);
-        let duty_value = (duty_range as f32 * duty_pct);
+        let duty_value = duty_range as f32 * duty_pct;
+
+        println!("Duty is: {:?}, duty_range: {:?}, duty_value: {:?}", duty_exp, duty_range, duty_value);
 
         channel.set_duty_hw(duty_value as u32);
         Ok(())
@@ -180,12 +162,11 @@ impl<'a, O: OutputPin> MotorDriver<'a, O> {
         Ok(())
     }
 
-    // 2-4% inverted logic -> 98-96%
     fn map_value(input: Angle) -> f32 {
         let input_min = -90;
         let input_max = 90;
-        let output_min = 0.96;
-        let output_max = 0.98;
+        let output_min = 0.97;
+        let output_max = 0.87;
     
         let input_range = (input_max - input_min) as f32;
         let output_range = output_max - output_min;

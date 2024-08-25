@@ -2,7 +2,7 @@
 members = [
     "pilot",
     "mainboard",
-    "common",
+    "comunication",
     "xtask"
 ]
 resolver = "2"

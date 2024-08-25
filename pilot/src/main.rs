@@ -4,9 +4,12 @@
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
+use embassy_sync::pubsub::{Publisher, PubSubChannel};
 use esp_backtrace as _;
 use esp_hal::{
+    analog::adc::{Adc, AdcConfig, Attenuation},
     clock::ClockControl,
+    gpio::{GpioPin, Io, Output, Level},
     peripherals::Peripherals,
     prelude::*,
     rng::Rng,
@@ -19,6 +22,13 @@ use esp_wifi::{
     initialize,
     EspWifiInitFor,
 };
+use comunication::{RcCarControlViaEspReady, Angle, Percent};
+mod joystick;
+use joystick::{Joystick, Reader};
+use zerocopy::AsBytes;
+
+type PilotJoystick = Joystick<GpioPin<0>, GpioPin<1>>;
+type PilotReader<'a> = Reader<'a, GpioPin<0>, GpioPin<1>>;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -37,6 +47,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
     let init = initialize(
@@ -63,10 +74,15 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     spawner.spawn(listener(manager, receiver)).ok();
+    Output::new(io.pins.gpio8, Level::High);
 
-    let mut ticker = Ticker::every(Duration::from_millis(500));
+    let channel = mk_static!(PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>, PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>::new());
+    let mut sub0 = channel.subscriber().unwrap();
+    let pub0 = mk_static!(Publisher<NoopRawMutex, (u16, u16), 4, 1, 1>, channel.publisher().unwrap());
+    let (ref mut joystick, ref mut reader) = mk_static!((PilotJoystick, PilotReader), Joystick::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
+    spawner.spawn(measurements(pub0, joystick, reader)).ok();
     loop {
-        ticker.next().await;
+        let (pin0_read, pin1_read) = sub0.next_message_pure().await;
         let peer = match manager.fetch_peer(false) {
             Ok(peer) => peer,
             Err(_) => {
@@ -77,11 +93,28 @@ async fn main(spawner: Spawner) -> ! {
                 }
             }
         };
+        let (angle, power) = PilotJoystick::convert((pin1_read, pin0_read));
+        let payload: Option<RcCarControlViaEspReady> = RcCarControlViaEspReady::new(angle, power);
+        match payload {
+            Some(x) => {
+                let mut sender = sender.lock().await;
+                let _ = sender.send_async(&peer.peer_address, x.as_bytes()).await;
+            },
+            _ => {
+                defmt::error!("Invalid data to peer {:?}", peer.peer_address);
+            }
+        }
+    }
+}
 
-        defmt::info!("Send hello to peer {:?}", peer.peer_address);
-        let mut sender = sender.lock().await;
-        let status = sender.send_async(&peer.peer_address, b"Hello Peer.").await;
-        println!("Send hello status: {:?}", status);
+#[embassy_executor::task]
+async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (u16, u16), 4, 1, 1>, joystick: &'static mut PilotJoystick, reader: &'static mut PilotReader<'static>) {
+    let mut ticker = Ticker::every(Duration::from_millis(100));
+    loop {
+        ticker.next().await;
+        let (pin0_mv, pin1_mv) = reader.read(joystick).unwrap();
+        println!("ADC reading = {pin0_mv} : {pin1_mv}");
+        publisher.publish_immediate((pin0_mv, pin1_mv));
     }
 }
 

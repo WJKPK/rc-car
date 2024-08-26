@@ -1,10 +1,8 @@
 use esp_hal::{
     analog::adc::{Adc, AdcConfig, Attenuation, AdcChannel, AdcPin, AdcCalLine},
     gpio::{any_pin::AnyPin, AnalogPin},
-    peripherals::ADC1,
-    peripheral::Peripheral
-};
-use core::marker::PhantomData;
+    peripherals::ADC1, peripheral::Peripheral
+}; use core::marker::PhantomData;
 use nb;
 use core::ops::{Neg,Div, Mul, Sub, Add};
 
@@ -60,15 +58,17 @@ where
             -min_abs + (-range_output * -(input_t - low_range_max_t) / low_range_max_t)
         } else if input_t > high_range_min_t && input_t < high_range_max_t {
             min_abs + (range_output * (input_t - high_range_min_t) / (high_range_max_t - high_range_min_t))
+        } else if input_t > high_range_max_t {
+            max_abs
         } else {
-            min_abs
+            T::from(0u16)
         }
     }
 
     pub fn convert(measurements: (u16, u16)) -> (Option<Angle>, Option<Percent>) {
         let (angle, power) = measurements;
-        let mut angle = Self::map_value(angle, 90i32, 0i32);
-        let power = Self::map_value(power, 100.0f32, 90.0f32);
+        let mut angle = Self::map_value(angle, 30i32, 0i32);
+        let power = -1.0f32 * Self::map_value(power, 100.0f32, 100.0f32);
         if angle > i8::MAX.into() {
             angle = 0;
         }

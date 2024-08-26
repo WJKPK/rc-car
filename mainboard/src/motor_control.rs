@@ -11,7 +11,7 @@ use comunication::Angle;
 use esp_println::println;
 
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, defmt::Format)]
 pub enum Direction {
     Forward = 0,
     Backward = 1,
@@ -129,8 +129,6 @@ impl<'a, O: OutputPin> MotorDriver<'a, O> {
         let duty_range = 2u32.pow(duty_exp);
         let duty_value = duty_range as f32 * duty_pct;
 
-        println!("Duty is: {:?}, duty_range: {:?}, duty_value: {:?}", duty_exp, duty_range, duty_value);
-
         channel.set_duty_hw(duty_value as u32);
         Ok(())
     }
@@ -151,13 +149,13 @@ impl<'a, O: OutputPin> MotorDriver<'a, O> {
         let duties: [[f32; Drv8210Input::NumOfInputs as usize]; Direction::NumOfDirections as usize] = [
             [power_percent, 0f32],
             [0f32, power_percent],
-            [100f32, 100f32]
+            [1f32, 1f32]
         ];
         for (i, pwm_channel) in self.front_motor.0.iter().enumerate() {
-            Self::set_duty(pwm_channel, self.front_motor.1, duties[i][direction as usize])?;
+            Self::set_duty(pwm_channel, self.front_motor.1, duties[direction as usize][i])?;
         }
         for (i, pwm_channel) in self.back_motor.0.iter().enumerate() {
-            Self::set_duty(pwm_channel, self.back_motor.1, duties[i][direction as usize])?;
+            Self::set_duty(pwm_channel, self.back_motor.1, duties[direction as usize][i])?;
         }
         Ok(())
     }

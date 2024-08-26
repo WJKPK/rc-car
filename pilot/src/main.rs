@@ -109,7 +109,7 @@ async fn main(spawner: Spawner) -> ! {
 
 #[embassy_executor::task]
 async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (u16, u16), 4, 1, 1>, joystick: &'static mut PilotJoystick, reader: &'static mut PilotReader<'static>) {
-    let mut ticker = Ticker::every(Duration::from_millis(100));
+    let mut ticker = Ticker::every(Duration::from_millis(40));
     loop {
         ticker.next().await;
         let (pin0_mv, pin1_mv) = reader.read(joystick).unwrap();

@@ -138,8 +138,8 @@ async fn motor_driver(
         } else if power == 0.0 {
             direction = Direction::Stop;
         }
-
-        motor_driver.drive_motor(direction, power.abs()).or_else(|_| stop_car()).expect("Motor power motor setup");
+        defmt::info!("Direction: {:?}, power{:?}", direction, power);
+        motor_driver.drive_motor(direction, power.abs()/100.0).or_else(|_| stop_car()).expect("Motor power motor setup");
     }
 }
 

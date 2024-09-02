@@ -5,6 +5,7 @@ use esp_hal::{
 }; use core::marker::PhantomData;
 use nb;
 use core::ops::{Neg,Div, Mul, Sub, Add};
+use num_traits::float::Float;
 
 type JoystickCal = AdcCalLine<ADC1>; 
 type JoystickReaderConf = AdcConfig<ADC1>;
@@ -15,6 +16,7 @@ pub struct Joystick<'a, O, N> {
     adc: Adc<'a, ADC1>,
 }
 use comunication::{Angle, Percent};
+use num_complex::Complex32;
 
 #[derive(Debug)]
 pub enum Error {
@@ -40,49 +42,38 @@ where
         Ok((x_axis, y_axis))
     }
 
-    fn map_value<T>(input: u16, max_abs: T, min_abs: T) -> T
-    where
-        T: Copy
-            + Sub<Output = T>
-            + Neg<Output = T>
-            + Add<T, Output = T>
-            + Mul<T, Output = T>
-            + Div<T, Output = T>
-            + From<u16>
-            + core::cmp::PartialOrd
-    {
-        const LOW_RANGE_MAX: u16 = 500;
-        const HIGH_RANGE_MIN: u16 = 700;
-        const LOW_RANGE_MIN: u16 = 0;
-        const HIGH_RANGE_MAX: u16 = 1550;
-        
-        let input_t = T::from(input);
-        let low_range_max_t = T::from(LOW_RANGE_MAX);
-        let high_range_min_t = T::from(HIGH_RANGE_MIN);
-        let low_range_min_t = T::from(LOW_RANGE_MIN);
-        let high_range_max_t = T::from(HIGH_RANGE_MAX);
-    
-        let range_output = max_abs - min_abs;
-    
-        if input_t < low_range_max_t {
-            -min_abs + (-range_output * -(input_t - low_range_max_t) / low_range_max_t)
-        } else if input_t > high_range_min_t && input_t < high_range_max_t {
-            min_abs + (range_output * (input_t - high_range_min_t) / (high_range_max_t - high_range_min_t))
-        } else if input_t > high_range_max_t {
-            max_abs
-        } else {
-            T::from(0u16)
-        }
-    }
-
     pub fn convert(measurements: (u16, u16)) -> (Option<Angle>, Option<Percent>) {
+        const BASE_ANGLE: f32 = 640.0;
+        const BASE_POWER: f32 = 660.0;
+        const MAX_POWER_MAGNITUDE: f32 = 550.0;
+        const PI_2: f32 = core::f32::consts::PI / 2.0f32;
+
         let (angle, power) = measurements;
-        let mut angle = Self::map_value(angle, 30i32, 0i32);
-        let power = -1.0f32 * Self::map_value(power, 100.0f32, 100.0f32);
-        if angle > i8::MAX.into() {
-            angle = 0;
+        let (angle, power): (f32, f32) = (<u16 as Into<f32>>::into(angle) - BASE_ANGLE, <u16 as Into<f32>>::into(power) - BASE_POWER);
+
+        let movement_vector = Complex32::new(angle.into(), power.into()).conj() * Complex32::new(0.0f32, -1.0f32);
+        let (magnitude, mut angle) = movement_vector.to_polar();
+        
+        // Ugh, any beter way to do this?
+        let power_sign = if power > 0.0f32 { -1.0f32 } else { 1.0f32 };
+        if angle > PI_2 {
+            angle = PI_2 - (angle % PI_2);
         }
-        (Angle::new(angle.try_into().unwrap()), Percent::new(power))
+        if angle < -PI_2 {
+            angle = -PI_2 - (angle % PI_2);
+        }
+
+        let mut angle = ((90.0f32 * angle) / PI_2) / 2.5f32;
+        let mut power: f32 = (power_sign *
+            (magnitude / MAX_POWER_MAGNITUDE).clamp(0.0f32, 1.0f32)) * 100.0f32;
+
+        if power.abs() < 30.0f32 {
+            power = 0.0f32;
+            angle = 0.0f32;
+        }
+        let angle_i8 = -1 * (angle as i32).max(i8::MIN as i32).min(i8::MAX as i32) as i8;
+        defmt::info!("angle: {:?}, power: {:?}", angle_i8, power);
+        (Angle::new(angle_i8), Percent::new(power))
     }
 }
 

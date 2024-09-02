@@ -82,6 +82,8 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(measurements(pub0, joystick)).ok();
     loop {
         let (pin0_read, pin1_read) = sub0.next_message_pure().await;
+        let (angle, power) = PilotJoystick::convert((pin1_read, pin0_read));
+
         let peer = match manager.fetch_peer(false) {
             Ok(peer) => peer,
             Err(_) => {

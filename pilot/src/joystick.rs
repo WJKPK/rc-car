@@ -9,25 +9,35 @@ use core::ops::{Neg,Div, Mul, Sub, Add};
 type JoystickCal = AdcCalLine<ADC1>; 
 type JoystickReaderConf = AdcConfig<ADC1>;
 
-pub struct Joystick<O, N> {
+pub struct Joystick<'a, O, N> {
     x_pin: AdcPin<O, ADC1, JoystickCal>,
     y_pin: AdcPin<N, ADC1, JoystickCal>,
+    adc: Adc<'a, ADC1>,
 }
 use comunication::{Angle, Percent};
 
-impl<'a, O, N> Joystick<O, N>
+#[derive(Debug)]
+pub enum Error {
+    Read,
+}
+
+impl<'a, O, N> Joystick<'a, O, N>
 where
     O: Peripheral<P = O> + AnalogPin + AdcChannel + 'a,
     N: Peripheral<P = N> + AnalogPin + AdcChannel + 'a,
 {
-    pub fn new(x_pin: O, y_pin: N, adc: ADC1) -> (Self, Reader<'a, O, N>) {
+    pub fn new(x_pin: O, y_pin: N, adc: ADC1) -> Self {
         let mut adc_config = AdcConfig::new();
         let mut adc0_pin = adc_config.enable_pin_with_cal::<_, JoystickCal>(x_pin, Attenuation::Attenuation11dB);
         let mut adc1_pin = adc_config.enable_pin_with_cal::<_, JoystickCal>(y_pin, Attenuation::Attenuation11dB);
         let mut adc = Adc::new(adc, adc_config);
+        Joystick::<O,N>{x_pin: adc0_pin, y_pin: adc1_pin, adc}
+    }
 
-        (Joystick::<O,N>{x_pin: adc0_pin, y_pin: adc1_pin}, Reader{adc, _phantom_o: PhantomData,
-                _phantom_n: PhantomData,})
+    pub fn read(&mut self) -> Result<(u16, u16), Error> {
+        let x_axis = (nb::block!(self.adc.read_oneshot(&mut self.x_pin))).map_err(|_| Error::Read)?;
+        let y_axis = (nb::block!(self.adc.read_oneshot(&mut self.y_pin))).map_err(|_| Error::Read)?;
+        Ok((x_axis, y_axis))
     }
 
     fn map_value<T>(input: u16, max_abs: T, min_abs: T) -> T
@@ -73,33 +83,6 @@ where
             angle = 0;
         }
         (Angle::new(angle.try_into().unwrap()), Percent::new(power))
-    }
-}
-
-pub struct Reader<'a, O, N>
-where
-    O: Peripheral<P = O> + AnalogPin + AdcChannel + 'a,
-    N: Peripheral<P = N> + AnalogPin + AdcChannel + 'a,
-{
-    adc: Adc<'a, ADC1>,
-    _phantom_o: PhantomData<&'a O>,
-    _phantom_n: PhantomData<&'a N>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    Read,
-}
-
-impl<'a, O, N> Reader<'a, O, N>
-where
-    O: Peripheral<P = O> + AnalogPin + AdcChannel + 'a,
-    N: Peripheral<P = N> + AnalogPin + AdcChannel + 'a,
-{
-    pub fn read(&mut self, joystick: &mut Joystick<O, N>) -> Result<(u16, u16), Error> {
-        let x_axis = (nb::block!(self.adc.read_oneshot(&mut joystick.x_pin))).map_err(|_| Error::Read)?;
-        let y_axis = (nb::block!(self.adc.read_oneshot(&mut joystick.y_pin))).map_err(|_| Error::Read)?;
-        Ok((x_axis, y_axis))
     }
 }
 

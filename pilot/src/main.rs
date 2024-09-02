@@ -24,11 +24,10 @@ use esp_wifi::{
 };
 use comunication::{RcCarControlViaEspReady, Angle, Percent};
 mod joystick;
-use joystick::{Joystick, Reader};
+use joystick::Joystick;
 use zerocopy::AsBytes;
 
-type PilotJoystick = Joystick<GpioPin<0>, GpioPin<1>>;
-type PilotReader<'a> = Reader<'a, GpioPin<0>, GpioPin<1>>;
+type PilotJoystick<'a> = Joystick<'a, GpioPin<0>, GpioPin<1>>;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -79,8 +78,8 @@ async fn main(spawner: Spawner) -> ! {
     let channel = mk_static!(PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>, PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>::new());
     let mut sub0 = channel.subscriber().unwrap();
     let pub0 = mk_static!(Publisher<NoopRawMutex, (u16, u16), 4, 1, 1>, channel.publisher().unwrap());
-    let (ref mut joystick, ref mut reader) = mk_static!((PilotJoystick, PilotReader), Joystick::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
-    spawner.spawn(measurements(pub0, joystick, reader)).ok();
+    let joystick = mk_static!(PilotJoystick, Joystick::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
+    spawner.spawn(measurements(pub0, joystick)).ok();
     loop {
         let (pin0_read, pin1_read) = sub0.next_message_pure().await;
         let peer = match manager.fetch_peer(false) {
@@ -108,11 +107,11 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (u16, u16), 4, 1, 1>, joystick: &'static mut PilotJoystick, reader: &'static mut PilotReader<'static>) {
+async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (u16, u16), 4, 1, 1>, joystick: &'static mut PilotJoystick<'static>) {
     let mut ticker = Ticker::every(Duration::from_millis(40));
     loop {
         ticker.next().await;
-        let (pin0_mv, pin1_mv) = reader.read(joystick).unwrap();
+        let (pin0_mv, pin1_mv) = joystick.read().unwrap();
         println!("ADC reading = {pin0_mv} : {pin1_mv}");
         publisher.publish_immediate((pin0_mv, pin1_mv));
     }

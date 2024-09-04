@@ -1,8 +1,6 @@
-#![no_std]
-
-pub mod types;
-pub use types::{Angle, Percent};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+pub const COMUNICATION_PERIOD_MS: u64 = 40;
+use crate::safe_types::{Angle, Percent};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, AsBytes, FromZeroes, FromBytes)]
 #[repr(C, packed)]

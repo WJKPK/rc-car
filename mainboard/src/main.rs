@@ -4,14 +4,20 @@
 mod motor_control;
 mod pwm_split;
 
+use common::{
+    mk_static,
+    safe_types::Angle,
+    communication::{RcCarControlViaEspReady, COMUNICATION_PERIOD_MS}
+};
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
+use embassy_sync::pubsub::{PubSubChannel, Publisher, Subscriber};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
-use embassy_sync::pubsub::{Subscriber, Publisher, PubSubChannel};
 use esp_backtrace as _;
 use esp_hal::{
     clock::{ClockControl, Clocks},
-    gpio::{any_pin::AnyPin, Io},
+    gpio::{any_pin::AnyPin, Io, OutputPin, GpioPin},
     ledc::{LSGlobalClkSource, Ledc},
     peripherals::Peripherals,
     prelude::*,
@@ -19,25 +25,14 @@ use esp_hal::{
     system::SystemControl,
     timer::timg::TimerGroup,
 };
-use esp_println::println;
 use esp_wifi::{
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
     initialize, EspWifiInitFor,
 };
+use motor_control::{Direction, MotorError, MotorDriver, MotorCurrentObserver, MotorDescriptorBoundle};
+use num_traits::float::FloatCore;
 use portable_atomic::{AtomicBool, Ordering};
 use pwm_split::PwmChannel;
-use motor_control::{Direction, MotorError};
-use comunication::{Angle, Percent, RcCarControlViaEspReady};
-use num_traits::float::FloatCore;
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 
 static PEER_FOUND: AtomicBool = AtomicBool::new(false);
 
@@ -69,7 +64,6 @@ async fn main(spawner: Spawner) {
 
     let wifi = peripherals.WIFI;
     let esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-    defmt::info!("esp-now version {}", esp_now.get_version().unwrap());
 
     let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, clocks);
     esp_hal_embassy::init(clocks, timer_group0);
@@ -81,13 +75,16 @@ async fn main(spawner: Spawner) {
         Mutex::<NoopRawMutex, _>::new(sender)
     );
 
-    let channel = mk_static!(PubSubChannel::<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>, PubSubChannel::<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>::new());
-    let mut sub0 = mk_static!(Subscriber<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>, channel.subscriber().unwrap());
+    let channel = mk_static!(
+        PubSubChannel::<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
+        PubSubChannel::<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>::new()
+    );
+    let sub0 = mk_static!(Subscriber<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>, channel.subscriber().unwrap());
     let pub0 = mk_static!(Publisher<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>, channel.publisher().unwrap());
 
     let splitted = mk_static!(
         pwm_split::SplitedPwm<'static>,
-        pwm_split::SplitedPwm::new(ledc).expect("Splitted setup")
+        pwm_split::SplitedPwm::new(ledc).expect("Splitt setup failed")
     );
 
     let front_power = motor_control::PowerMotorInternals::new(
@@ -106,40 +103,70 @@ async fn main(spawner: Spawner) {
         motor_control::MotorDescriptorBoundle<AnyPin>,
         motor_control::MotorDescriptorBoundle::new(front_power, back_power, serwo)
     );
+    let current_observer = mk_static!(MotorCurrentObserver<'static, GpioPin<0>, GpioPin<1>>,
+        MotorCurrentObserver::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
 
     spawner.spawn(listener(pub0, manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
-    spawner.spawn(motor_driver(sub0, splitted, driver)).ok();
+    spawner.spawn(motor_driver(sub0, splitted, driver, current_observer)).ok();
+}
+
+fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>, O: OutputPin>(
+    motor_driver: &MotorDriver<O>,
+    control: RcCarControlViaEspReady,
+    stop_car: F
+) {
+    motor_driver
+        .drive_serwo(control.turn)
+        .or_else(|_| stop_car())
+        .expect("Motor servo setup failed");
+
+    let power = control.power();
+    let direction = match power {
+        p if p < 0.0 => Direction::Backward,
+        p if p == 0.0 => Direction::Stop,
+        _ => Direction::Forward,
+    };
+
+    motor_driver
+        .drive_motor(direction, power.abs() / 100.0)
+        .or_else(|_| stop_car())
+        .expect("Power motor setup failed");
 }
 
 #[embassy_executor::task]
 async fn motor_driver(
     subscriber: &'static mut Subscriber<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
     splitted: &'static mut pwm_split::SplitedPwm<'static>,
-    motor_controller: &'static mut motor_control::MotorDescriptorBoundle<AnyPin<'static>>,
+    motor_controller: &'static mut MotorDescriptorBoundle<AnyPin<'static>>,
+    current_observer: &'static mut MotorCurrentObserver<'static, GpioPin<0>, GpioPin<1>>
 ) {
-    let motor_driver = motor_controller.setup_driver(splitted).expect("Motor driver setup");
+    let mut timeout = Ticker::every(Duration::from_millis(COMUNICATION_PERIOD_MS * 3));
+    let motor_driver = motor_controller
+        .setup_driver(splitted)
+        .expect("Motor driver setup failed");
     let stop_car = || -> Result<(), MotorError> {
         motor_driver.drive_motor(Direction::Stop, 0.0f32)?;
         match Angle::new(0) {
-            Some(x) => {motor_driver.drive_serwo(x)},
-            None => unreachable!()
+            Some(x) => motor_driver.drive_serwo(x),
+            None => unreachable!(),
         }
     };
-
     loop {
-        let control = subscriber.next_message_pure().await;
-        motor_driver.drive_serwo(control.turn).or_else(|_| stop_car()).expect("Motor serwo setup");
-
-        let power: f32 = control.power();
-        let mut direction = Direction::Forward;
-        if power < 0.0 {
-            direction = Direction::Backward;
-        } else if power == 0.0 {
-            direction = Direction::Stop;
+        let control = select(subscriber.next_message_pure(), timeout.next()).await;
+        match control {
+            Either::First(control) => {
+                if !current_observer.current_in_range() {
+                    stop_car().expect("Motor driver with current outside range cannot stop");
+                    continue;
+                }
+                handle_incoming_control_message(&motor_driver, control, stop_car);
+                timeout.reset();
+            },
+            Either::Second(_) => {
+                stop_car().expect("Stopping the car failed");
+            }
         }
-        defmt::info!("Direction: {:?}, power{:?}", direction, power);
-        motor_driver.drive_motor(direction, power.abs()/100.0).or_else(|_| stop_car()).expect("Motor power motor setup");
     }
 }
 
@@ -149,21 +176,21 @@ async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>
     while !PEER_FOUND.load(Ordering::Relaxed) {
         ticker.next().await;
 
-        defmt::info!("Send Broadcast...");
         let mut sender = sender.lock().await;
-        let status = sender.send_async(&BROADCAST_ADDRESS, b"Hello.").await;
-        println!("Send broadcast status: {:?}", status);
+        let _ = sender.send_async(&BROADCAST_ADDRESS, b"Hello.").await;
     }
 }
 
-const CONTROL_DATA_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
 #[embassy_executor::task]
-async fn listener(publisher: &'static mut Publisher<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
+async fn listener(
+    publisher: &'static mut Publisher<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
     manager: &'static EspNowManager<'static>,
-    mut receiver: EspNowReceiver<'static>) {
+    mut receiver: EspNowReceiver<'static>,
+) {
+    const CONTROL_DATA_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
     loop {
         let r = receiver.receive_async().await;
-        defmt::info!("Received {:?}", r.get_data());
+        defmt::info!("Control data received {:?}", r.get_data());
         if !manager.peer_exists(&r.info.src_address) {
             manager
                 .add_peer(PeerInfo {
@@ -180,5 +207,5 @@ async fn listener(publisher: &'static mut Publisher<'static, NoopRawMutex, RcCar
         array.copy_from_slice(r.get_data());
         let control_data: RcCarControlViaEspReady = unsafe { core::mem::transmute(array) };
         publisher.publish_immediate(control_data);
-        }
+    }
 }

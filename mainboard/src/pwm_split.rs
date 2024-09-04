@@ -37,8 +37,10 @@ pub struct SplitedPwm<'a> {
 
 impl<'a> SplitedPwm<'a> {
     pub fn new(ledc: &'a Ledc) -> Result<Self, SplitterError> {
-        let timer_fast = Self::timer_low_speed(ledc, PwmTimer::Timer0, PwmDuty::Duty5Bit, 24.kHz())?;
-        let timer_slow = Self::timer_low_speed(ledc, PwmTimer::Timer1, PwmDuty::Duty13Bit, 50.Hz())?;
+        let timer_fast =
+            Self::timer_low_speed(ledc, PwmTimer::Timer0, PwmDuty::Duty5Bit, 24.kHz())?;
+        let timer_slow =
+            Self::timer_low_speed(ledc, PwmTimer::Timer1, PwmDuty::Duty13Bit, 50.Hz())?;
 
         Ok(SplitedPwm {
             ledc,
@@ -65,11 +67,12 @@ impl<'a> SplitedPwm<'a> {
             )?;
             vec.push(result).map_err(|_| SplitterError::PwmChannel)?;
         }
-        let arr: [PwmChannelLowSpeed<O>; N] = vec
-            .into_array()
-            .map_err(|_| SplitterError::PwmChannel)?;
+        let arr: [PwmChannelLowSpeed<O>; N] =
+            vec.into_array().map_err(|_| SplitterError::PwmChannel)?;
 
-        let duty = self.timer[timer_type as usize].get_duty().ok_or_else(|| SplitterError::PwmTimer)?;
+        let duty = self.timer[timer_type as usize]
+            .get_duty()
+            .ok_or_else(|| SplitterError::PwmTimer)?;
 
         Ok((arr, duty))
     }
@@ -86,7 +89,8 @@ impl<'a> SplitedPwm<'a> {
                 duty,
                 clock_source: timer::LSClockSource::APBClk,
                 frequency,
-            }).map_err(|_| SplitterError::PwmTimer)?;
+            })
+            .map_err(|_| SplitterError::PwmTimer)?;
         Ok(lstimer)
     }
 
@@ -102,7 +106,8 @@ impl<'a> SplitedPwm<'a> {
             timer,
             duty_pct: 0,
             pin_config: channel::config::PinConfig::PushPull,
-        }).map_err(|_| SplitterError::PwmTimer)?;
+        })
+        .map_err(|_| SplitterError::PwmTimer)?;
         chan.set_duty_hw(init);
         Ok(chan)
     }

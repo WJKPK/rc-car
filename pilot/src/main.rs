@@ -7,7 +7,6 @@ use embassy_time::{Duration, Ticker};
 use embassy_sync::pubsub::{Publisher, PubSubChannel};
 use esp_backtrace as _;
 use esp_hal::{
-    analog::adc::{Adc, AdcConfig, Attenuation},
     clock::ClockControl,
     gpio::{GpioPin, Io, Output, Level},
     peripherals::Peripherals,
@@ -16,27 +15,21 @@ use esp_hal::{
     system::SystemControl,
     timer::timg::TimerGroup,
 };
-use esp_println::println;
 use esp_wifi::{
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
     initialize,
     EspWifiInitFor,
 };
-use comunication::{RcCarControlViaEspReady, Angle, Percent};
+use common::{
+    mk_static,
+    communication::{RcCarControlViaEspReady,COMUNICATION_PERIOD_MS},
+    rc_filter::RCLowPassFilter
+};
 mod joystick;
 use joystick::Joystick;
 use zerocopy::AsBytes;
 
 type PilotJoystick<'a> = Joystick<'a, GpioPin<0>, GpioPin<1>>;
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 
 #[main]
 async fn main(spawner: Spawner) -> ! {
@@ -80,10 +73,13 @@ async fn main(spawner: Spawner) -> ! {
     let pub0 = mk_static!(Publisher<NoopRawMutex, (u16, u16), 4, 1, 1>, channel.publisher().unwrap());
     let joystick = mk_static!(PilotJoystick, Joystick::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
     spawner.spawn(measurements(pub0, joystick)).ok();
+
+    let sampling_frequency_f32: f32 = 1000.0/COMUNICATION_PERIOD_MS as f32;
+    let power_filter = RCLowPassFilter::new(sampling_frequency_f32, 500.0);
+    let angle_filter = RCLowPassFilter::new(sampling_frequency_f32, 50.0);
+
     loop {
         let (pin0_read, pin1_read) = sub0.next_message_pure().await;
-        let (angle, power) = PilotJoystick::convert((pin1_read, pin0_read));
-
         let peer = match manager.fetch_peer(false) {
             Ok(peer) => peer,
             Err(_) => {
@@ -94,28 +90,23 @@ async fn main(spawner: Spawner) -> ! {
                 }
             }
         };
-        let (angle, power) = PilotJoystick::convert((pin1_read, pin0_read));
+        let (angle, power) = PilotJoystick::convert((pin1_read, pin0_read), power_filter, angle_filter);
         let payload: Option<RcCarControlViaEspReady> = RcCarControlViaEspReady::new(angle, power);
-        match payload {
-            Some(x) => {
-                let mut sender = sender.lock().await;
-                let _ = sender.send_async(&peer.peer_address, x.as_bytes()).await;
-            },
-            _ => {
-                defmt::error!("Invalid data to peer {:?}", peer.peer_address);
-            }
+        if let Some(payload) = payload {
+            let _ = sender.lock().await.send_async(&peer.peer_address, payload.as_bytes()).await;
         }
     }
 }
 
 #[embassy_executor::task]
 async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (u16, u16), 4, 1, 1>, joystick: &'static mut PilotJoystick<'static>) {
-    let mut ticker = Ticker::every(Duration::from_millis(40));
+
+    let mut ticker = Ticker::every(Duration::from_millis(COMUNICATION_PERIOD_MS));
     loop {
         ticker.next().await;
-        let (pin0_mv, pin1_mv) = joystick.read().unwrap();
-        println!("ADC reading = {pin0_mv} : {pin1_mv}");
-        publisher.publish_immediate((pin0_mv, pin1_mv));
+        if let Ok((pin0_mv, pin1_mv)) = joystick.read() {
+            publisher.publish_immediate((pin0_mv, pin1_mv));
+        };
     }
 }
 
@@ -123,18 +114,18 @@ async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (
 async fn listener(manager: &'static EspNowManager<'static>, mut receiver: EspNowReceiver<'static>) {
     loop {
         let r = receiver.receive_async().await;
-        defmt::info!("Received {:?}", r.get_data());
         if r.info.dst_address == BROADCAST_ADDRESS {
             if !manager.peer_exists(&r.info.src_address) {
-                manager
+                match manager
                     .add_peer(PeerInfo {
                         peer_address: r.info.src_address,
                         lmk: None,
                         channel: None,
                         encrypt: false,
-                    })
-                    .unwrap();
-                defmt::info!("Added peer {:?}", r.info.src_address);
+                    }) {
+                        Ok(_) => defmt::info!("Added peer {:?}", r.info.src_address),
+                        Err(_) => defmt::error!("Add peer failed"),
+                }
             }
         }
     }

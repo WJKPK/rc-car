@@ -16,13 +16,14 @@ esp-hal = { version = "0.18.0", features = ["log"] }
 esp-hal-embassy = { version = "0.1.0" }
 esp-backtrace = { version = "0.13.0", features = ["exception-handler", "panic-handler", "println"] }
 esp-println = { version = "0.10.0", features = ["log", "defmt-espflash"]}
-esp-wifi = { version = "0.6.0"}
+esp-wifi = { version = "0.6.0" }
+embassy-futures = { version = "0.1.1" }
 
 static_cell         = { version = "2.0.0", features = ["nightly"] }
 portable-atomic =     { version = "1.7.0", default-features = false }
 heapless = "0.8.0"
 fugit = "0.3.7"
-comunication = { path = "../comunication" }
+common = { path = "../common" }
 num-traits = { version = "0.2.19", default-features = false }
 
 [features]

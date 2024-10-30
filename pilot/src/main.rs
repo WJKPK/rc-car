@@ -15,6 +15,7 @@ use esp_hal::{
     system::SystemControl,
     timer::timg::TimerGroup,
 };
+use defmt::println;
 use esp_wifi::{
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
     initialize,
@@ -66,7 +67,7 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     spawner.spawn(listener(manager, receiver)).ok();
-    Output::new(io.pins.gpio8, Level::High);
+    Output::new(io.pins.gpio9, Level::High);
 
     let channel = mk_static!(PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>, PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>::new());
     let mut sub0 = channel.subscriber().unwrap();
@@ -75,7 +76,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(measurements(pub0, joystick)).ok();
 
     let sampling_frequency_f32: f32 = 1000.0/COMUNICATION_PERIOD_MS as f32;
-    let power_filter = RCLowPassFilter::new(sampling_frequency_f32, 500.0);
+    let power_filter = RCLowPassFilter::new(sampling_frequency_f32, 100.0);
     let angle_filter = RCLowPassFilter::new(sampling_frequency_f32, 50.0);
 
     loop {
@@ -105,6 +106,7 @@ async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (
     loop {
         ticker.next().await;
         if let Ok((pin0_mv, pin1_mv)) = joystick.read() {
+            println!("Read: p1: {:?}, p2: {:?}", pin0_mv, pin1_mv);
             publisher.publish_immediate((pin0_mv, pin1_mv));
         };
     }

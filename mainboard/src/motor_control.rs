@@ -238,7 +238,7 @@ where
         const R2: MiliOhm = 1000000;
         const R3: MiliOhm = 10000000;
 
-        let convert = |meas: u16| -> MiliAmperes {(R2 * 10 * meas as MiliVolt) / (R1 * R3)};
+        let convert = |meas: u16| -> MiliAmperes {defmt::info!("{}", meas); (R2 * 10 * meas as MiliVolt) / (R1 * R3)};
         let front_motor = (nb::block!(self.adc.read_oneshot(&mut self.x_pin))).map(convert).map_err(|_| Error::Read)?;
         let back_motor = (nb::block!(self.adc.read_oneshot(&mut self.y_pin))).map(convert).map_err(|_| Error::Read)?;
 

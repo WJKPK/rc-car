@@ -3,7 +3,7 @@
 
 mod motor_control;
 mod pwm_split;
-
+use defmt::println;
 use common::{
     mk_static,
     safe_types::Angle,
@@ -109,6 +109,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(listener(pub0, manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
     spawner.spawn(motor_driver(sub0, splitted, driver, current_observer)).ok();
+    println!("Yo!");
 }
 
 fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>, O: OutputPin>(
@@ -181,6 +182,12 @@ async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>
     }
 }
 
+fn safe_copy_from_slice<T: Copy>(dst: &mut [T], src: &[T]) -> usize {
+    let copy_len = core::cmp::min(dst.len(), src.len());
+    dst[..copy_len].copy_from_slice(&src[..copy_len]);
+    copy_len
+}
+
 #[embassy_executor::task]
 async fn listener(
     publisher: &'static mut Publisher<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
@@ -188,6 +195,8 @@ async fn listener(
     mut receiver: EspNowReceiver<'static>,
 ) {
     const CONTROL_DATA_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
+    let mut array = [0u8; CONTROL_DATA_SIZE];
+
     loop {
         let r = receiver.receive_async().await;
         defmt::info!("Control data received {:?}", r.get_data());
@@ -203,9 +212,20 @@ async fn listener(
             PEER_FOUND.store(true, Ordering::Relaxed);
             defmt::info!("Added peer {:?}", r.info.src_address);
         }
-        let mut array = [0u8; CONTROL_DATA_SIZE];
-        array.copy_from_slice(r.get_data());
+
+        let bytes_count = safe_copy_from_slice(&mut array, r.get_data());
+        if bytes_count < CONTROL_DATA_SIZE {
+            defmt::warn!("Received too small message");
+            continue;
+        }
+
         let control_data: RcCarControlViaEspReady = unsafe { core::mem::transmute(array) };
+
+        if !control_data.crc_correct() {
+            defmt::warn!("CRC8 incorrect!");
+            continue;
+        }
+
         publisher.publish_immediate(control_data);
     }
 }

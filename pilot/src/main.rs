@@ -6,18 +6,17 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use embassy_sync::pubsub::{Publisher, PubSubChannel};
 use esp_backtrace as _;
+use esp_alloc as _;
 use esp_hal::{
-    clock::ClockControl,
     gpio::{GpioPin, Io, Output, Level},
-    peripherals::Peripherals,
     prelude::*,
     rng::Rng,
-    system::SystemControl,
     timer::timg::TimerGroup,
 };
+use defmt::println;
 use esp_wifi::{
+    init,
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
-    initialize,
     EspWifiInitFor,
 };
 use common::{
@@ -31,23 +30,23 @@ use zerocopy::AsBytes;
 
 type PilotJoystick<'a> = Joystick<'a, GpioPin<0>, GpioPin<1>>;
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
 
-    let peripherals = Peripherals::take();
-
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
+    let peripherals = esp_hal::init({
+        let mut config = esp_hal::Config::default();
+        config.cpu_clock = CpuClock::max();
+        config
+    });
+    esp_alloc::heap_allocator!(72 * 1024);
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
-    let init = initialize(
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let init = init(
         EspWifiInitFor::Wifi,
-        timer,
+        timg0.timer0,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
-        &clocks,
     )
     .unwrap();
 
@@ -55,8 +54,9 @@ async fn main(spawner: Spawner) -> ! {
     let esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
     defmt::info!("esp-now version {}", esp_now.get_version().unwrap());
 
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timer_group0);
+    use esp_hal::timer::systimer::{SystemTimer, Target};
+    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
+    esp_hal_embassy::init(systimer.alarm0);
 
     let (manager, sender, receiver) = esp_now.split();
     let manager = mk_static!(EspNowManager<'static>, manager);
@@ -66,7 +66,7 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     spawner.spawn(listener(manager, receiver)).ok();
-    Output::new(io.pins.gpio8, Level::High);
+    Output::new(io.pins.gpio9, Level::High);
 
     let channel = mk_static!(PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>, PubSubChannel::<NoopRawMutex, (u16, u16), 4, 1, 1>::new());
     let mut sub0 = channel.subscriber().unwrap();
@@ -75,7 +75,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(measurements(pub0, joystick)).ok();
 
     let sampling_frequency_f32: f32 = 1000.0/COMUNICATION_PERIOD_MS as f32;
-    let power_filter = RCLowPassFilter::new(sampling_frequency_f32, 500.0);
+    let power_filter = RCLowPassFilter::new(sampling_frequency_f32, 100.0);
     let angle_filter = RCLowPassFilter::new(sampling_frequency_f32, 50.0);
 
     loop {
@@ -105,6 +105,7 @@ async fn measurements(publisher: &'static mut Publisher<'static, NoopRawMutex, (
     loop {
         ticker.next().await;
         if let Ok((pin0_mv, pin1_mv)) = joystick.read() {
+            println!("Read: p1: {:?}, p2: {:?}", pin0_mv, pin1_mv);
             publisher.publish_immediate((pin0_mv, pin1_mv));
         };
     }

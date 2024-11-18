@@ -1,11 +1,10 @@
 use esp_hal::{
-    gpio::OutputPin,
+    gpio::{Output, Level, AnyPin},
     ledc::{
         channel::{self, Channel, ChannelIFace},
         timer::{self, Timer, TimerIFace},
         Ledc, LowSpeed,
     },
-    peripheral::Peripheral,
     prelude::*,
 };
 use fugit::HertzU32;
@@ -25,7 +24,7 @@ pub enum SplitterError {
 }
 
 pub type PwmTimerLowSpeed<'a> = Timer<'a, LowSpeed>;
-pub type PwmChannelLowSpeed<'a, O> = Channel<'a, LowSpeed, O>;
+pub type PwmChannelLowSpeed<'a> = Channel<'a, LowSpeed, AnyPin>;
 pub type PwmChannel = channel::Number;
 pub type PwmTimer = timer::Number;
 pub type PwmDuty = timer::config::Duty;
@@ -47,16 +46,14 @@ impl<'a> SplitedPwm<'a> {
             timer: [timer_slow, timer_fast],
         })
     }
-    pub fn create_channels<O, const N: usize>(
+    pub fn create_channels<const N: usize>(
         &'a self,
         timer_type: TimerSpeed,
-        pin: &'a mut [O; N],
+        pin: &'a mut [AnyPin; N],
         channel_number: [PwmChannel; N],
-    ) -> Result<([PwmChannelLowSpeed<O>; N], PwmDuty), SplitterError>
-    where
-        O: Peripheral<P = O> + OutputPin + 'a,
+    ) -> Result<([PwmChannelLowSpeed<'a>; N], PwmDuty), SplitterError>
     {
-        let mut vec: heapless::Vec<PwmChannelLowSpeed<O>, N> = heapless::Vec::new();
+        let mut vec: heapless::Vec<PwmChannelLowSpeed<'a>, N> = heapless::Vec::new();
         for (i, p) in pin.iter_mut().enumerate() {
             let result = Self::channel_low_speed(
                 self.ledc,
@@ -67,7 +64,7 @@ impl<'a> SplitedPwm<'a> {
             )?;
             vec.push(result).map_err(|_| SplitterError::PwmChannel)?;
         }
-        let arr: [PwmChannelLowSpeed<O>; N] =
+        let arr: [PwmChannelLowSpeed<'a>; N] =
             vec.into_array().map_err(|_| SplitterError::PwmChannel)?;
 
         let duty = self.timer[timer_type as usize]
@@ -94,14 +91,15 @@ impl<'a> SplitedPwm<'a> {
         Ok(lstimer)
     }
 
-    fn channel_low_speed<O: OutputPin>(
+    fn channel_low_speed (
         ledc: &'a Ledc,
         timer: &'a PwmTimerLowSpeed,
         number: PwmChannel,
-        output_pin: impl Peripheral<P = O> + 'a,
+        output_pin: &'a mut AnyPin,
         init: u32,
-    ) -> Result<PwmChannelLowSpeed<'a, O>, SplitterError> {
-        let mut chan = ledc.get_channel(number, output_pin);
+    ) -> Result<PwmChannelLowSpeed<'a>, SplitterError> {
+        let output = Output::new(output_pin, Level::Low);
+        let mut chan = ledc.get_channel(number, output);
         chan.configure(channel::config::Config {
             timer,
             duty_pct: 0,

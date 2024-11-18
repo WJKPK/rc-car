@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 zerocopy = { version = "0.7.35", features = ["derive"] }
+crc = "3.2.1"

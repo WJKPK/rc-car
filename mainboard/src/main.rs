@@ -2,8 +2,8 @@
 #![no_main]
 
 mod motor_control;
+mod ble_terminal;
 mod pwm_split;
-
 use common::{
     mk_static,
     safe_types::Angle,
@@ -12,68 +12,51 @@ use common::{
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::{PubSubChannel, Publisher, Subscriber};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex , mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
-    clock::{ClockControl, Clocks},
-    gpio::{any_pin::AnyPin, Io, OutputPin, GpioPin},
+    gpio::{AnyPin, Io},
     ledc::{LSGlobalClkSource, Ledc},
-    peripherals::Peripherals,
     prelude::*,
     rng::Rng,
-    system::SystemControl,
-    timer::timg::TimerGroup,
+    timer::{timg::TimerGroup, systimer::{SystemTimer, Target}},
 };
 use esp_wifi::{
     esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
-    initialize, EspWifiInitFor,
+    init, EspWifiInitFor, EspWifiInitialization,
 };
-use motor_control::{Direction, MotorError, MotorDriver, MotorCurrentObserver, MotorDescriptorBoundle};
+use motor_control::{Direction, MotorError, MotorDriver, MotorDescriptorBoundle};
 use num_traits::float::FloatCore;
 use portable_atomic::{AtomicBool, Ordering};
 use pwm_split::PwmChannel;
 
 static PEER_FOUND: AtomicBool = AtomicBool::new(false);
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
-
-    let peripherals = Peripherals::take();
-
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = mk_static!(
-        Clocks<'static>,
-        ClockControl::max(system.clock_control).freeze()
-    );
-    let ledc = mk_static!(Ledc<'static>, Ledc::new(peripherals.LEDC, clocks));
-    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    esp_alloc::heap_allocator!(144 * 1024);
+    let peripherals = esp_hal::init({
+        let mut config = esp_hal::Config::default();
+        config.cpu_clock = CpuClock::max();
+        config
+    });
+    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
+    esp_hal_embassy::init(systimer.alarm0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    let timer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER).alarm0;
-    let init = initialize(
-        EspWifiInitFor::Wifi,
-        timer,
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let init = mk_static!(EspWifiInitialization, init(
+        EspWifiInitFor::WifiBle,
+        timg0.timer0,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
-        clocks,
     )
-    .unwrap();
+    .unwrap());
 
-    let wifi = peripherals.WIFI;
-    let esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-
-    let timer_group0 = TimerGroup::new_async(peripherals.TIMG0, clocks);
-    esp_hal_embassy::init(clocks, timer_group0);
-
-    let (manager, sender, receiver) = esp_now.split();
-    let manager = mk_static!(EspNowManager<'static>, manager);
-    let sender = mk_static!(
-        Mutex::<NoopRawMutex, EspNowSender<'static>>,
-        Mutex::<NoopRawMutex, _>::new(sender)
-    );
+    let ledc = mk_static!(Ledc<'static>, Ledc::new(peripherals.LEDC));
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
 
     let channel = mk_static!(
         PubSubChannel::<NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
@@ -88,31 +71,42 @@ async fn main(spawner: Spawner) {
     );
 
     let front_power = motor_control::PowerMotorInternals::new(
-        [AnyPin::new(io.pins.gpio3), AnyPin::new(io.pins.gpio2)],
+        [AnyPin::from(io.pins.gpio3.degrade()), AnyPin::from(io.pins.gpio2.degrade())],
         [PwmChannel::Channel0, PwmChannel::Channel1],
     );
 
     let back_power = motor_control::PowerMotorInternals::new(
-        [AnyPin::new(io.pins.gpio8), AnyPin::new(io.pins.gpio10)],
+        [AnyPin::from(io.pins.gpio8.degrade()), AnyPin::from(io.pins.gpio10.degrade())],
         [PwmChannel::Channel2, PwmChannel::Channel3],
     );
 
     let serwo =
-        motor_control::SerwoMotorInternals::new(AnyPin::new(io.pins.gpio7), PwmChannel::Channel4);
+        motor_control::SerwoMotorInternals::new(AnyPin::from(io.pins.gpio7.degrade()), PwmChannel::Channel4);
     let driver = mk_static!(
-        motor_control::MotorDescriptorBoundle<AnyPin>,
+        motor_control::MotorDescriptorBoundle,
         motor_control::MotorDescriptorBoundle::new(front_power, back_power, serwo)
     );
-    let current_observer = mk_static!(MotorCurrentObserver<'static, GpioPin<0>, GpioPin<1>>,
-        MotorCurrentObserver::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
+
+    let wifi = peripherals.WIFI;
+    let esp_now = esp_wifi::esp_now::EspNow::new(init, wifi).unwrap();
+    let (manager, sender, receiver) = esp_now.split();
+
+    let manager = mk_static!(EspNowManager<'static>, manager);
+    let sender = mk_static!(
+        Mutex::<NoopRawMutex, EspNowSender<'static>>,
+        Mutex::<NoopRawMutex, _>::new(sender)
+    );
 
     spawner.spawn(listener(pub0, manager, receiver)).ok();
     spawner.spawn(broadcaster(sender)).ok();
-    spawner.spawn(motor_driver(sub0, splitted, driver, current_observer)).ok();
+    spawner.spawn(motor_driver(sub0, splitted, driver)).ok();
+    spawner.spawn(ble_terminal::ble_driver(init, peripherals.BT)).ok();
+    spawner.spawn(ble_terminal::cli_driver()).ok();
 }
 
-fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>, O: OutputPin>(
-    motor_driver: &MotorDriver<O>,
+
+fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>>(
+    motor_driver: &MotorDriver,
     control: RcCarControlViaEspReady,
     stop_car: F
 ) {
@@ -138,8 +132,7 @@ fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>, O: OutputP
 async fn motor_driver(
     subscriber: &'static mut Subscriber<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
     splitted: &'static mut pwm_split::SplitedPwm<'static>,
-    motor_controller: &'static mut MotorDescriptorBoundle<AnyPin<'static>>,
-    current_observer: &'static mut MotorCurrentObserver<'static, GpioPin<0>, GpioPin<1>>
+    motor_controller: &'static mut MotorDescriptorBoundle,
 ) {
     let mut timeout = Ticker::every(Duration::from_millis(COMUNICATION_PERIOD_MS * 3));
     let motor_driver = motor_controller
@@ -156,11 +149,7 @@ async fn motor_driver(
         let control = select(subscriber.next_message_pure(), timeout.next()).await;
         match control {
             Either::First(control) => {
-                if !current_observer.current_in_range() {
-                    stop_car().expect("Motor driver with current outside range cannot stop");
-                    continue;
-                }
-                handle_incoming_control_message(&motor_driver, control, stop_car);
+                  handle_incoming_control_message(&motor_driver, control, stop_car);
                 timeout.reset();
             },
             Either::Second(_) => {
@@ -181,6 +170,12 @@ async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>
     }
 }
 
+fn safe_copy_from_slice<T: Copy>(dst: &mut [T], src: &[T]) -> usize {
+    let copy_len = core::cmp::min(dst.len(), src.len());
+    dst[..copy_len].copy_from_slice(&src[..copy_len]);
+    copy_len
+}
+
 #[embassy_executor::task]
 async fn listener(
     publisher: &'static mut Publisher<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
@@ -188,6 +183,8 @@ async fn listener(
     mut receiver: EspNowReceiver<'static>,
 ) {
     const CONTROL_DATA_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
+    let mut array = [0u8; CONTROL_DATA_SIZE];
+
     loop {
         let r = receiver.receive_async().await;
         defmt::info!("Control data received {:?}", r.get_data());
@@ -203,9 +200,20 @@ async fn listener(
             PEER_FOUND.store(true, Ordering::Relaxed);
             defmt::info!("Added peer {:?}", r.info.src_address);
         }
-        let mut array = [0u8; CONTROL_DATA_SIZE];
-        array.copy_from_slice(r.get_data());
+
+        let bytes_count = safe_copy_from_slice(&mut array, r.get_data());
+        if bytes_count < CONTROL_DATA_SIZE {
+            defmt::warn!("Received too small message");
+            continue;
+        }
+
         let control_data: RcCarControlViaEspReady = unsafe { core::mem::transmute(array) };
+
+        if !control_data.crc_correct() {
+            defmt::warn!("CRC8 incorrect!");
+            continue;
+        }
+
         publisher.publish_immediate(control_data);
     }
 }

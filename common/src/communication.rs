@@ -1,21 +1,39 @@
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 pub const COMUNICATION_PERIOD_MS: u64 = 40;
 use crate::safe_types::{Angle, Percent};
+use crc::{CRC_8_I_432_1, Crc};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, AsBytes, FromZeroes, FromBytes)]
 #[repr(C, packed)]
 pub struct RcCarControlViaEspReady {
-    pub turn: Angle,
     pub power: Percent,
+    pub turn: Angle,
+    pub crc: u8
 }
 
 const RC_CAR_CONTROL_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
 impl RcCarControlViaEspReady {
     pub fn new(turn: Option<Angle>, power: Option<Percent>) -> Option<Self> {
         match (turn, power) {
-            (Some(turn), Some(power)) => Some(RcCarControlViaEspReady { turn, power }),
+            (Some(turn), Some(power)) => {
+                let crc = Crc::<u8>::new(&CRC_8_I_432_1);
+                let mut digest = crc.digest();
+                digest.update(&turn.to_ne_bytes());
+                digest.update(&power.to_ne_bytes());
+                Some(RcCarControlViaEspReady { turn, power, crc: digest.finalize() })
+            },
             _ => None,
         }
+    }
+
+    pub fn crc_correct(&self) -> bool {
+        let crc = Crc::<u8>::new(&CRC_8_I_432_1);
+        let mut digest = crc.digest();
+        let ptr = core::ptr::addr_of!(self.power);
+        let power = unsafe { ptr.read_unaligned() };
+        digest.update(&self.turn.to_ne_bytes());
+        digest.update(&power.to_ne_bytes());
+        self.crc == digest.finalize()
     }
 
     pub fn turn(&self) -> i8 {
@@ -59,7 +77,15 @@ mod tests {
         let angle = 10;
         let power = 90.0;
         let payload = RcCarControlViaEspReady::new(Angle::new(angle), Percent::new(power)).unwrap();
-        assert_eq!(payload.as_bytes(), [10, 0, 0, 180, 66]);
+        assert_eq!(payload.as_bytes(), [0, 0, 180, 66, 10, 90]);
+    }
+
+    #[test]
+    fn crc_work() {
+        let angle = 10;
+        let power = 90.0;
+        let payload = RcCarControlViaEspReady::new(Angle::new(angle), Percent::new(power)).unwrap();
+        assert!(payload.crc_correct());
     }
 
 }

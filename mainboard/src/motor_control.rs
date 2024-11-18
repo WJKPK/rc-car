@@ -3,10 +3,7 @@ use crate::pwm_split::{
 };
 use common::safe_types::Angle;
 use esp_hal::{
-    analog::adc::{Adc, AdcPin, AdcChannel, AdcConfig, Attenuation, AdcCalLine},
-    gpio::{OutputPin, AnalogPin},
-    peripheral::Peripheral,
-    peripherals::ADC1,
+    gpio::AnyPin,
     prelude::*,
 };
 
@@ -37,30 +34,28 @@ impl From<SplitterError> for MotorError {
     }
 }
 
-pub struct PowerMotorInternals<O> {
-    pub pins: [O; Drv8210Input::NumOfInputs as usize],
+pub struct PowerMotorInternals {
+    pub pins: [AnyPin; Drv8210Input::NumOfInputs as usize],
     pub channels: [PwmChannel; Drv8210Input::NumOfInputs as usize],
 }
 
-impl<'a, O> PowerMotorInternals<O>
-where
-    O: Peripheral<P = O> + OutputPin + 'a,
+impl<'a> PowerMotorInternals
 {
     pub fn new(
-        pins: [O; Drv8210Input::NumOfInputs as usize],
+        pins: [AnyPin; Drv8210Input::NumOfInputs as usize],
         channels: [PwmChannel; Drv8210Input::NumOfInputs as usize],
     ) -> Self {
         PowerMotorInternals { pins, channels }
     }
 }
 
-pub struct SerwoMotorInternals<O> {
-    control: [O; 1],
+pub struct SerwoMotorInternals {
+    control: [AnyPin; 1],
     channel: [PwmChannel; 1],
 }
 
-impl<O: OutputPin> SerwoMotorInternals<O> {
-    pub fn new(control: O, channel: PwmChannel) -> Self {
+impl SerwoMotorInternals {
+    pub fn new(control: AnyPin, channel: PwmChannel) -> Self {
         SerwoMotorInternals {
             control: [control],
             channel: [channel],
@@ -68,20 +63,18 @@ impl<O: OutputPin> SerwoMotorInternals<O> {
     }
 }
 
-pub struct MotorDescriptorBoundle<O> {
-    pub front_motor: PowerMotorInternals<O>,
-    pub back_motor: PowerMotorInternals<O>,
-    pub serwo: SerwoMotorInternals<O>,
+pub struct MotorDescriptorBoundle {
+    pub front_motor: PowerMotorInternals,
+    pub back_motor: PowerMotorInternals,
+    pub serwo: SerwoMotorInternals,
 }
 
-impl<'a, O> MotorDescriptorBoundle<O>
-where
-    O: Peripheral<P = O> + OutputPin + 'a,
+impl<'a> MotorDescriptorBoundle
 {
     pub fn new(
-        front: PowerMotorInternals<O>,
-        back: PowerMotorInternals<O>,
-        serwo: SerwoMotorInternals<O>,
+        front: PowerMotorInternals,
+        back: PowerMotorInternals,
+        serwo: SerwoMotorInternals,
     ) -> Self {
         MotorDescriptorBoundle {
             front_motor: front,
@@ -93,9 +86,9 @@ where
     pub fn setup_driver(
         &'a mut self,
         splitted: &'a SplitedPwm<'a>,
-    ) -> Result<MotorDriver<'a, O>, MotorError> {
+    ) -> Result<MotorDriver<'a>, MotorError> {
         let front_motor = splitted
-            .create_channels::<O, { Drv8210Input::NumOfInputs as usize }>(
+            .create_channels::<{ Drv8210Input::NumOfInputs as usize }>(
                 TimerSpeed::FastTimer,
                 &mut self.front_motor.pins,
                 self.front_motor.channels,
@@ -103,7 +96,7 @@ where
             .map_err(|e| MotorError::from(e))?;
 
         let back_motor = splitted
-            .create_channels::<O, { Drv8210Input::NumOfInputs as usize }>(
+            .create_channels::<{ Drv8210Input::NumOfInputs as usize }>(
                 TimerSpeed::FastTimer,
                 &mut self.back_motor.pins,
                 self.back_motor.channels,
@@ -111,7 +104,7 @@ where
             .map_err(|e| MotorError::from(e))?;
 
         let serwo = splitted
-            .create_channels::<O, 1>(
+            .create_channels::<1>(
                 TimerSpeed::SlowTimer,
                 &mut self.serwo.control,
                 self.serwo.channel,
@@ -126,15 +119,15 @@ where
     }
 }
 
-pub struct MotorDriver<'a, O: OutputPin> {
-    front_motor: ([PwmChannelLowSpeed<'a, O>; 2], PwmDuty),
-    back_motor: ([PwmChannelLowSpeed<'a, O>; 2], PwmDuty),
-    serwo: ([PwmChannelLowSpeed<'a, O>; 1], PwmDuty),
+pub struct MotorDriver<'a> {
+    front_motor: ([PwmChannelLowSpeed<'a>; 2], PwmDuty),
+    back_motor: ([PwmChannelLowSpeed<'a>; 2], PwmDuty),
+    serwo: ([PwmChannelLowSpeed<'a>; 1], PwmDuty),
 }
 
-impl<'a, O: OutputPin> MotorDriver<'a, O> {
+impl<'a> MotorDriver<'a> {
     fn set_duty(
-        channel: &PwmChannelLowSpeed<'a, O>,
+        channel: &PwmChannelLowSpeed<'a>,
         duty: PwmDuty,
         duty_pct: f32,
     ) -> Result<(), MotorError> {
@@ -201,55 +194,5 @@ impl<'a, O: OutputPin> MotorDriver<'a, O> {
     pub fn drive_serwo(&self, angle: Angle) -> Result<(), MotorError> {
         Self::set_duty(&self.serwo.0[0], self.serwo.1, Self::map_value(angle))?;
         Ok(())
-    }
-}
-
-type MotorCurrentCal = AdcCalLine<ADC1>; 
-type MiliAmperes = u32;
-type MiliOhm = u32;
-type MiliVolt = u32;
-
-pub struct MotorCurrentObserver<'a, O, N> {
-    x_pin: AdcPin<O, ADC1, MotorCurrentCal>,
-    y_pin: AdcPin<N, ADC1, MotorCurrentCal>,
-    adc: Adc<'a, ADC1>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    Read,
-}
-
-impl<'a, O, N> MotorCurrentObserver<'a, O, N>
-where
-    O: Peripheral<P = O> + AnalogPin + AdcChannel + 'a,
-    N: Peripheral<P = N> + AnalogPin + AdcChannel + 'a,
-{
-    pub fn new(x_pin: O, y_pin: N, adc: ADC1) -> Self {
-        let mut adc_config = AdcConfig::new();
-        let adc0_pin = adc_config.enable_pin_with_cal::<_, MotorCurrentCal>(x_pin, Attenuation::Attenuation11dB);
-        let adc1_pin = adc_config.enable_pin_with_cal::<_, MotorCurrentCal>(y_pin, Attenuation::Attenuation11dB);
-        let adc = Adc::new(adc, adc_config);
-        MotorCurrentObserver::<O,N>{x_pin: adc0_pin, y_pin: adc1_pin, adc}
-    }
-
-    fn read(&mut self) -> Result<(MiliAmperes, MiliAmperes), Error> {
-        const R1: MiliOhm = 15;
-        const R2: MiliOhm = 1000000;
-        const R3: MiliOhm = 10000000;
-
-        let convert = |meas: u16| -> MiliAmperes {defmt::info!("{}", meas); (R2 * 10 * meas as MiliVolt) / (R1 * R3)};
-        let front_motor = (nb::block!(self.adc.read_oneshot(&mut self.x_pin))).map(convert).map_err(|_| Error::Read)?;
-        let back_motor = (nb::block!(self.adc.read_oneshot(&mut self.y_pin))).map(convert).map_err(|_| Error::Read)?;
-
-        Ok((front_motor, back_motor))
-    }
-
-    pub fn current_in_range(&mut self) -> bool {
-    const CURRENT_THRESHOLD: MiliAmperes = 1500;
-
-    self.read()
-        .map(|(front, back)| front <= CURRENT_THRESHOLD && back <= CURRENT_THRESHOLD)
-        .unwrap_or(false)
     }
 }

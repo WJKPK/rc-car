@@ -1,37 +1,36 @@
 #![no_std]
 #![no_main]
 
-mod motor_control;
+mod motor_driver;
+mod motor_manager;
 mod ble_terminal;
+mod communication_manager;
+mod cli;
 mod pwm_split;
 use common::{
     mk_static,
-    safe_types::Angle,
-    communication::{RcCarControlViaEspReady, COMUNICATION_PERIOD_MS}
+    communication::RcCarControlViaEspReady
 };
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::{PubSubChannel, Publisher, Subscriber};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex , mutex::Mutex};
-use embassy_time::{Duration, Ticker};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use esp_backtrace as _;
 use esp_hal::{
-    gpio::{AnyPin, Io},
+    reset::software_reset,
+    gpio::{AnyPin, Io, GpioPin},
     ledc::{LSGlobalClkSource, Ledc},
     prelude::*,
     rng::Rng,
     timer::{timg::TimerGroup, systimer::{SystemTimer, Target}},
 };
 use esp_wifi::{
-    esp_now::{EspNowManager, EspNowReceiver, EspNowSender, PeerInfo, BROADCAST_ADDRESS},
+    esp_now::{EspNowManager, EspNowSender},
     init, EspWifiInitFor, EspWifiInitialization,
 };
-use motor_control::{Direction, MotorError, MotorDriver, MotorDescriptorBoundle};
-use num_traits::float::FloatCore;
-use portable_atomic::{AtomicBool, Ordering};
+use motor_driver::MotorCurrentObserver;
 use pwm_split::PwmChannel;
-
-static PEER_FOUND: AtomicBool = AtomicBool::new(false);
+use motor_manager::motor_manager;
+use communication_manager::{broadcaster, listener};
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -70,21 +69,21 @@ async fn main(spawner: Spawner) {
         pwm_split::SplitedPwm::new(ledc).expect("Splitt setup failed")
     );
 
-    let front_power = motor_control::PowerMotorInternals::new(
+    let front_power = motor_driver::PowerMotorInternals::new(
         [AnyPin::from(io.pins.gpio3.degrade()), AnyPin::from(io.pins.gpio2.degrade())],
         [PwmChannel::Channel0, PwmChannel::Channel1],
     );
 
-    let back_power = motor_control::PowerMotorInternals::new(
+    let back_power = motor_driver::PowerMotorInternals::new(
         [AnyPin::from(io.pins.gpio8.degrade()), AnyPin::from(io.pins.gpio10.degrade())],
         [PwmChannel::Channel2, PwmChannel::Channel3],
     );
 
     let serwo =
-        motor_control::SerwoMotorInternals::new(AnyPin::from(io.pins.gpio7.degrade()), PwmChannel::Channel4);
+        motor_driver::SerwoMotorInternals::new(AnyPin::from(io.pins.gpio7.degrade()), PwmChannel::Channel4);
     let driver = mk_static!(
-        motor_control::MotorDescriptorBoundle,
-        motor_control::MotorDescriptorBoundle::new(front_power, back_power, serwo)
+        motor_driver::MotorDescriptorBoundle,
+        motor_driver::MotorDescriptorBoundle::new(front_power, back_power, serwo)
     );
 
     let wifi = peripherals.WIFI;
@@ -93,127 +92,23 @@ async fn main(spawner: Spawner) {
 
     let manager = mk_static!(EspNowManager<'static>, manager);
     let sender = mk_static!(
-        Mutex::<NoopRawMutex, EspNowSender<'static>>,
-        Mutex::<NoopRawMutex, _>::new(sender)
+        EspNowSender<'static>,
+        sender
     );
+    let current_observer = mk_static!(MotorCurrentObserver<'static, GpioPin<0>, GpioPin<1>>,
+        MotorCurrentObserver::new(io.pins.gpio0, io.pins.gpio1, peripherals.ADC1));
 
-    spawner.spawn(listener(pub0, manager, receiver)).ok();
-    spawner.spawn(broadcaster(sender)).ok();
-    spawner.spawn(motor_driver(sub0, splitted, driver)).ok();
-    spawner.spawn(ble_terminal::ble_driver(init, peripherals.BT)).ok();
-    spawner.spawn(ble_terminal::cli_driver()).ok();
+    spawner.must_spawn(listener(pub0, manager, receiver));
+    spawner.must_spawn(broadcaster(sender));
+    spawner.must_spawn(motor_manager(sub0, splitted, driver, current_observer));
+    spawner.must_spawn(ble_terminal::ble_driver(init, peripherals.BT));
+    spawner.must_spawn(cli::cli_driver());
 }
 
-
-fn handle_incoming_control_message<F: Fn() -> Result<(), MotorError>>(
-    motor_driver: &MotorDriver,
-    control: RcCarControlViaEspReady,
-    stop_car: F
-) {
-    motor_driver
-        .drive_serwo(control.turn)
-        .or_else(|_| stop_car())
-        .expect("Motor servo setup failed");
-
-    let power = control.power();
-    let direction = match power {
-        p if p < 0.0 => Direction::Backward,
-        p if p == 0.0 => Direction::Stop,
-        _ => Direction::Forward,
-    };
-
-    motor_driver
-        .drive_motor(direction, power.abs() / 100.0)
-        .or_else(|_| stop_car())
-        .expect("Power motor setup failed");
-}
-
-#[embassy_executor::task]
-async fn motor_driver(
-    subscriber: &'static mut Subscriber<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
-    splitted: &'static mut pwm_split::SplitedPwm<'static>,
-    motor_controller: &'static mut MotorDescriptorBoundle,
-) {
-    let mut timeout = Ticker::every(Duration::from_millis(COMUNICATION_PERIOD_MS * 3));
-    let motor_driver = motor_controller
-        .setup_driver(splitted)
-        .expect("Motor driver setup failed");
-    let stop_car = || -> Result<(), MotorError> {
-        motor_driver.drive_motor(Direction::Stop, 0.0f32)?;
-        match Angle::new(0) {
-            Some(x) => motor_driver.drive_serwo(x),
-            None => unreachable!(),
-        }
-    };
+#[no_mangle]
+pub extern "Rust" fn custom_halt() -> ! {
     loop {
-        let control = select(subscriber.next_message_pure(), timeout.next()).await;
-        match control {
-            Either::First(control) => {
-                  handle_incoming_control_message(&motor_driver, control, stop_car);
-                timeout.reset();
-            },
-            Either::Second(_) => {
-                stop_car().expect("Stopping the car failed");
-            }
-        }
+        software_reset();
     }
 }
 
-#[embassy_executor::task]
-async fn broadcaster(sender: &'static Mutex<NoopRawMutex, EspNowSender<'static>>) {
-    let mut ticker = Ticker::every(Duration::from_secs(1));
-    while !PEER_FOUND.load(Ordering::Relaxed) {
-        ticker.next().await;
-
-        let mut sender = sender.lock().await;
-        let _ = sender.send_async(&BROADCAST_ADDRESS, b"Hello.").await;
-    }
-}
-
-fn safe_copy_from_slice<T: Copy>(dst: &mut [T], src: &[T]) -> usize {
-    let copy_len = core::cmp::min(dst.len(), src.len());
-    dst[..copy_len].copy_from_slice(&src[..copy_len]);
-    copy_len
-}
-
-#[embassy_executor::task]
-async fn listener(
-    publisher: &'static mut Publisher<'static, NoopRawMutex, RcCarControlViaEspReady, 4, 1, 1>,
-    manager: &'static EspNowManager<'static>,
-    mut receiver: EspNowReceiver<'static>,
-) {
-    const CONTROL_DATA_SIZE: usize = core::mem::size_of::<RcCarControlViaEspReady>();
-    let mut array = [0u8; CONTROL_DATA_SIZE];
-
-    loop {
-        let r = receiver.receive_async().await;
-        defmt::info!("Control data received {:?}", r.get_data());
-        if !manager.peer_exists(&r.info.src_address) {
-            manager
-                .add_peer(PeerInfo {
-                    peer_address: r.info.src_address,
-                    lmk: None,
-                    channel: None,
-                    encrypt: false,
-                })
-                .unwrap();
-            PEER_FOUND.store(true, Ordering::Relaxed);
-            defmt::info!("Added peer {:?}", r.info.src_address);
-        }
-
-        let bytes_count = safe_copy_from_slice(&mut array, r.get_data());
-        if bytes_count < CONTROL_DATA_SIZE {
-            defmt::warn!("Received too small message");
-            continue;
-        }
-
-        let control_data: RcCarControlViaEspReady = unsafe { core::mem::transmute(array) };
-
-        if !control_data.crc_correct() {
-            defmt::warn!("CRC8 incorrect!");
-            continue;
-        }
-
-        publisher.publish_immediate(control_data);
-    }
-}

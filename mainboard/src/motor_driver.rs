@@ -3,14 +3,18 @@ use crate::pwm_split::{
 };
 use common::safe_types::Angle;
 use esp_hal::{
-    gpio::AnyPin,
+    gpio::{AnalogPin, AnyPin},
+    peripherals::ADC1,
+    peripheral::Peripheral,
+    analog::adc::{Adc, AdcPin, AdcChannel, AdcConfig, Attenuation, AdcCalLine},
     prelude::*,
 };
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, defmt::Format)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug, Default, defmt::Format, ufmt::derive::uDebug)]
 pub enum Direction {
     Forward = 0,
     Backward = 1,
+    #[default]
     Stop = 2,
     NumOfDirections = 3,
 }
@@ -131,13 +135,13 @@ impl<'a> MotorDriver<'a> {
         duty: PwmDuty,
         duty_pct: f32,
     ) -> Result<(), MotorError> {
-        if duty_pct > 1f32 {
+        if duty_pct > 100f32 {
             return Err(MotorError::InputParameter);
         }
 
         let duty_exp = duty as u32;
         let duty_range = 2u32.pow(duty_exp);
-        let duty_value = duty_range as f32 * duty_pct;
+        let duty_value = duty_range as f32 * (duty_pct / 100.0);
 
         channel.set_duty_hw(duty_value as u32);
         Ok(())
@@ -158,7 +162,7 @@ impl<'a> MotorDriver<'a> {
     pub fn drive_motor(&self, direction: Direction, power_percent: f32) -> Result<(), MotorError> {
         let duties: [[f32; Drv8210Input::NumOfInputs as usize];
             Direction::NumOfDirections as usize] =
-            [[power_percent, 0f32], [0f32, power_percent], [1f32, 1f32]];
+            [[power_percent, 0f32], [0f32, power_percent], [100f32, 100f32]];
         for (i, pwm_channel) in self.front_motor.0.iter().enumerate() {
             Self::set_duty(
                 pwm_channel,
@@ -179,8 +183,8 @@ impl<'a> MotorDriver<'a> {
     fn map_value(input: Angle) -> f32 {
         let input_min = -90;
         let input_max = 90;
-        let output_min = 0.97;
-        let output_max = 0.87;
+        let output_min = 97.0;
+        let output_max = 87.0;
 
         let input_range = (input_max - input_min) as f32;
         let output_range = output_max - output_min;
@@ -194,5 +198,49 @@ impl<'a> MotorDriver<'a> {
     pub fn drive_serwo(&self, angle: Angle) -> Result<(), MotorError> {
         Self::set_duty(&self.serwo.0[0], self.serwo.1, Self::map_value(angle))?;
         Ok(())
+    }
+}
+
+type MotorCurrentCal = AdcCalLine<ADC1>; 
+pub type MiliAmperes = u32;
+pub type MiliOhm = u32;
+pub type MiliVolt = u32;
+
+pub struct MotorCurrentObserver<'a, O, N> {
+    x_pin: AdcPin<O, ADC1, MotorCurrentCal>,
+    y_pin: AdcPin<N, ADC1, MotorCurrentCal>,
+    adc: Adc<'a, ADC1>,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Read,
+}
+
+impl<'a, O, N> MotorCurrentObserver<'a, O, N>
+where
+    O: Peripheral<P = O> + AnalogPin + AdcChannel + 'a,
+    N: Peripheral<P = N> + AnalogPin + AdcChannel + 'a,
+{
+    pub fn new(x_pin: O, y_pin: N, adc: ADC1) -> Self {
+        let mut adc_config = AdcConfig::new();
+        let adc0_pin = adc_config.enable_pin_with_cal::<_, MotorCurrentCal>(x_pin, Attenuation::Attenuation11dB);
+        let adc1_pin = adc_config.enable_pin_with_cal::<_, MotorCurrentCal>(y_pin, Attenuation::Attenuation11dB);
+        let adc = Adc::new(adc, adc_config);
+        MotorCurrentObserver::<O,N>{x_pin: adc0_pin, y_pin: adc1_pin, adc}
+    }
+
+    pub fn read(&mut self) -> Result<(MiliAmperes, MiliAmperes), Error> {
+        const R1: MiliOhm = 15;
+        const R2: MiliOhm = 1000000;
+        const R3: MiliOhm = 10000000;
+
+        let convert = |meas: u16| -> MiliAmperes {(R2 * 1000 * meas as MiliVolt) / (R1 * R3)};
+        let front_motor = (nb::block!(self.adc.read_oneshot(&mut self.x_pin))).map(convert).map_err(|_| Error::Read)?;
+        let back_motor = (nb::block!(self.adc.read_oneshot(&mut self.y_pin))).map(convert).map_err(|_| Error::Read)?;
+
+        defmt::info!("{}mA {}mA", front_motor, back_motor);
+
+        Ok((front_motor, back_motor))
     }
 }

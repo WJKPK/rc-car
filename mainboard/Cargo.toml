@@ -14,7 +14,7 @@ embassy-time = { version = "0.3.2", features = ["defmt", "defmt-timestamp-uptime
 
 esp-hal = { version = "0.21.1", features = ["log"] }
 esp-hal-embassy = { version = "0.4.0" }
-esp-backtrace = { version = "0.11.1", features = ["exception-handler", "panic-handler", "println"] }
+esp-backtrace = { version = "0.14.2", features = ["exception-handler", "panic-handler", "defmt", "custom-halt"] }
 esp-println = { version = "0.9.1", features = ["log", "defmt-espflash"]}
 esp-wifi = { version = "0.10.1"}
 esp-alloc = { version = "0.5.0"}
@@ -27,6 +27,8 @@ heapless = "0.8.0"
 fugit = "0.3.7"
 common = { path = "../common" }
 num-traits = { version = "0.2.19", default-features = false }
+strum = { version = "0.26.2", default-features = false , features = ["derive"] }
+strum_macros = { version = "0.26.3" }
 
 embedded-cli = "0.2.1"
 embedded-io = "0.6.1"

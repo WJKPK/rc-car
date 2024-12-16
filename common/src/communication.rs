@@ -26,7 +26,7 @@ impl RcCarControlViaEspReady {
         }
     }
 
-    pub fn crc_correct(&self) -> bool {
+    fn crc_correct(&self) -> bool {
         let crc = Crc::<u8>::new(&CRC_8_I_432_1);
         let mut digest = crc.digest();
         let ptr = core::ptr::addr_of!(self.power);
@@ -34,6 +34,18 @@ impl RcCarControlViaEspReady {
         digest.update(&self.turn.to_ne_bytes());
         digest.update(&power.to_ne_bytes());
         self.crc == digest.finalize()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+        if bytes.len() != RC_CAR_CONTROL_SIZE {
+            return None;
+        }
+        
+        let control = RcCarControlViaEspReady::ref_from(bytes)?;
+        if !control.crc_correct() {
+            return None;
+        }
+        Some(control)
     }
 
     pub fn turn(&self) -> i8 {

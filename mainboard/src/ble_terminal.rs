@@ -1,18 +1,15 @@
 extern crate alloc;
 use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::str;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_backtrace as _;
 use esp_hal::{
     peripherals::BT,
-    time,
-};
+    time, };
 use esp_wifi::{
     ble::controller::asynch::BleConnector, EspWifiInitialization,
 };
-use core::cell::RefCell;
 use bleps::{
     ad_structure::{
         create_advertising_data,
@@ -26,15 +23,19 @@ use bleps::{
     gatt,
 };
 use core::convert::Infallible;
-use embedded_io::ErrorType;
-use embedded_cli::Command;
-use embedded_cli::cli::CliBuilder;
-use ufmt::uwrite;
-use ufmt::uwriteln;
 use embassy_futures::select::{select, Either};
 use embassy_sync::channel::{Channel, Sender};
-use embassy_time::{Duration, Timer};
-use esp_alloc::HEAP;
+
+pub type TextOverBleBuffer = Channel::<CriticalSectionRawMutex, Vec<u8>, CLI_CHANNEL_CAPACITY>;
+const CLI_CHANNEL_CAPACITY: usize = 12;
+pub static CLI_TX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
+pub static LOG_TX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
+pub static CLI_RX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
+
+pub fn get_logger_writter() -> Writer {
+    Writer::new(&LOG_TX_CHANNEL)
+}
+
 #[macro_export]
 macro_rules! make_notification_closure {
     (
@@ -48,16 +49,15 @@ macro_rules! make_notification_closure {
                 let receive_channel = $channel.receiver();
                 let mut collect_buffer: Vec<u8> = Vec::new();
                 loop {
-                    match embassy_futures::select::select(
+                    match select(
                         receive_channel.receive(),
                         embassy_time::Timer::after(embassy_time::Duration::from_millis($timeout_ms)),
                     )
                     .await
-                    {
-                        embassy_futures::select::Either::First(mut message) => {
+                    { Either::First(mut message) => {
                             collect_buffer.append(&mut message);
                         }
-                        embassy_futures::select::Either::Second(_) => {
+                        Either::Second(_) => {
                             if collect_buffer.is_empty() {
                                 return None;
                             }
@@ -75,25 +75,8 @@ macro_rules! make_notification_closure {
     };
 }
 
-#[derive(Command)]
-enum Base<'a> {
-    /// Say hello to World or someone else
-    Hello {
-        /// To whom to say hello (World by default)
-        name: Option<&'a str>,
-    },
-
-    /// Stop CLI and exit
-    Exit,
-}
-
-type TextOverBleBuffer = Channel::<CriticalSectionRawMutex, Vec<u8>, CLI_CHANNEL_CAPACITY>;
-const CLI_CHANNEL_CAPACITY: usize = 12;
-static CLI_TX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
-static LOG_TX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
-static CLI_RX_CHANNEL: TextOverBleBuffer = TextOverBleBuffer::new();
-
-struct Writer {
+#[derive(Clone)]
+pub struct Writer {
     sender: Sender<'static, CriticalSectionRawMutex, Vec<u8>, CLI_CHANNEL_CAPACITY>
 }
 
@@ -130,53 +113,6 @@ impl ufmt::uWrite for Writer {
 }
 
 #[embassy_executor::task]
-pub async fn cli_driver() {
-    let writer = Writer::new(&CLI_TX_CHANNEL);
-    let receiver = CLI_RX_CHANNEL.receiver();
-
-    let (command_buffer, history_buffer) = unsafe {
-            static mut COMMAND_BUFFER: [u8; 32] = [0; 32];
-            static mut HISTORY_BUFFER: [u8; 32] = [0; 32];
-            (COMMAND_BUFFER.as_mut(), HISTORY_BUFFER.as_mut())
-        };
-    let mut cli = CliBuilder::default()
-        .writer(writer)
-        .command_buffer(command_buffer)
-        .history_buffer(history_buffer)
-        .build();
-
-    if let Err(e) = cli {
-        return;
-    }
-
-    let mut cli = cli.unwrap();
-    loop {
-        let received_bytes = receiver.receive().await;
-        for b in received_bytes {
-            let _ = cli.process_byte::<Base, _>(
-            b,
-            &mut Base::processor(|cli, command| {
-                match command {
-                    Base::Hello { name } => {
-                        // last write in command callback may or may not
-                        // end with newline. so both uwrite!() and uwriteln!()
-                        // will give identical results
-                        let _ = uwrite!(cli.writer(), "Hello, {}", name.unwrap_or("World"));
-                    }
-                    Base::Exit => {
-                        // We can write via normal function if formatting not needed
-                        let _ = uwrite!(cli.writer(), "Cli can't shutdown now");
-                    }
-                }
-                Ok(())
-            }),
-            );
-        }
-    }
-}
-
-
-#[embassy_executor::task]
 pub async fn ble_driver(init: &'static EspWifiInitialization, mut bluetooth: BT) {
     let now = || time::now().duration_since_epoch().to_millis();
     let connector = BleConnector::new(init, &mut bluetooth);
@@ -193,7 +129,7 @@ pub async fn ble_driver(init: &'static EspWifiInitialization, mut bluetooth: BT)
         let _ = ble.cmd_set_le_advertise_enable(true).await;
         defmt::info!("started advertising");
     
-        let mut rec_serial = |offset: usize, data: &[u8]| {
+        let mut rec_serial = |_offset: usize, data: &[u8]| {
             let sender = CLI_RX_CHANNEL.sender();
             let line = Vec::from(data);
             let _ = sender.try_send(line);
@@ -242,14 +178,14 @@ pub async fn ble_driver(init: &'static EspWifiInitialization, mut bluetooth: BT)
     
         let mut rng = bleps::no_rng::NoRng;
         let mut srv = AttributeServer::new(&mut ble, &mut gatt_attributes, &mut rng);
-        let mut cli_notifier = make_notification_closure!(
+        let cli_notifier = make_notification_closure!(
             CLI_TX_CHANNEL,
             cli_tx_line_handle,
             "CLI",
             25
         );
         
-        let mut log_notifier = make_notification_closure!(
+        let log_notifier = make_notification_closure!(
             LOG_TX_CHANNEL,
             log_tx_line_handle,
             "LOG",

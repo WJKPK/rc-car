@@ -518,7 +518,18 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dda6c53c50ed96cce44e8565bd7659f8884d55bac3262184c3a77f748553e3ff"
 dependencies = [
- "esp-println",
+ "esp-println 0.9.1",
+]
+
+[[package]]
+name = "esp-backtrace"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7660d85e3e7b0e113aaeeffb1a155e64a09a5035d4104031875acdba4cb68e"
+dependencies = [
+ "defmt",
+ "esp-build",
+ "esp-println 0.12.0",
 ]
 
 [[package]]
@@ -640,6 +651,16 @@ checksum = "e98f0f58453dd2ce08d99228fc8757fad39d05dfd26643665d1093b8844f42cc"
 dependencies = [
  "critical-section",
  "defmt",
+ "log",
+]
+
+[[package]]
+name = "esp-println"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee38e87bc7e303c299047c0e9bcd0f8ccca7c7e70d1fd78bbb565db14f33beb6"
+dependencies = [
+ "esp-build",
  "log",
 ]
 
@@ -1136,16 +1157,18 @@ dependencies = [
  "embedded-cli",
  "embedded-io",
  "esp-alloc",
- "esp-backtrace",
+ "esp-backtrace 0.14.2",
  "esp-hal",
  "esp-hal-embassy",
- "esp-println",
+ "esp-println 0.9.1",
  "esp-wifi",
  "fugit",
  "heapless",
  "num-traits",
  "portable-atomic",
  "static_cell",
+ "strum",
+ "strum_macros",
  "ufmt",
 ]
 
@@ -1159,10 +1182,10 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "esp-alloc",
- "esp-backtrace",
+ "esp-backtrace 0.11.1",
  "esp-hal",
  "esp-hal-embassy",
- "esp-println",
+ "esp-println 0.9.1",
  "esp-wifi",
  "nb 1.1.0",
  "num-complex",
